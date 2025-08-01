@@ -1,6 +1,9 @@
-fastapi
 uvicorn[standard]
 python-dotenv
 replicate
 firebase-admin
 fastapi
+pydantic
+fastapi==0.100.0
+hypercorn==0.14.4
+uvicorn

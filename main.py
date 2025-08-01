@@ -8,13 +8,15 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from typing import Dict, Any, List
 
-# Imports for handling the file conversion from base64
+# --- Imports for handling environment variables and file conversion ---
 import base64
+import json
 import io
 
 from replicate.helpers import FileOutput
 
 # --- Initialization ---
+# This loads your local .env file for testing. On Railway, it does nothing.
 load_dotenv()
 app = FastAPI()
 
@@ -23,22 +25,38 @@ origins = [
     "http://localhost:3000",
     "http://localhost:8081",
     "https://ai-video-generator-mvp.netlify.app"
+    # IMPORTANT: Add your deployed frontend URL here if it's different.
 ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
-# --- Firebase Admin SDK Setup ---
-script_dir = os.path.dirname(__file__)
-key_path = os.path.join(script_dir, "serviceAccountKey.json")
-if not firebase_admin._apps:
-    try:
-        cred = credentials.Certificate(key_path)
+# --- Firebase Admin SDK Setup (Railway Compatible) ---
+# This block now reads secrets from environment variables instead of a local file.
+db = None
+try:
+    # Get the Base64 encoded service account from environment variables
+    firebase_secret_base64 = os.getenv('FIREBASE_SERVICE_ACCOUNT_BASE64')
+    if not firebase_secret_base64:
+        raise ValueError("FIREBASE_SERVICE_ACCOUNT_BASE64 environment variable not found.")
+
+    # Decode the Base64 string into bytes, then into a JSON string
+    decoded_secret = base64.b64decode(firebase_secret_base64).decode('utf-8')
+    # Parse the JSON string into a Python dictionary
+    service_account_info = json.loads(decoded_secret)
+
+    # Hot-reload safe initialization
+    if not firebase_admin._apps:
+        # Initialize the app using the credentials dictionary, NOT a file path
+        cred = credentials.Certificate(service_account_info)
         firebase_admin.initialize_app(cred)
-    except Exception as e:
-        print(f"CRITICAL ERROR during Firebase init: {e}")
-db = firestore.client()
+    
+    db = firestore.client()
+
+except Exception as e:
+    print(f"CRITICAL ERROR during Firebase init: {e}")
+
 
 # --- Pydantic Models ---
 class VideoRequest(BaseModel):
@@ -75,54 +93,49 @@ async def generate_video(request: VideoRequest):
     try:
         user_ref.update({'credits': firestore.Increment(-1)})
     except Exception as e:
-        # If we can't even deduct the credit, stop here. No refund needed.
         raise HTTPException(status_code=500, detail=f"Failed to deduct credits: {e}")
 
     # --- Step 3: Prepare and run the long Replicate task ---
     try:
         api_params = request.params.copy()
         
-        # Correctly convert the base64 string from the frontend into a file-like object
         if "image" in api_params:
             image_data = api_params.get("image")
             if image_data and isinstance(image_data, str) and image_data.startswith("data:image"):
                 _header, encoded_data = image_data.split(",", 1)
                 decoded_data = base64.b64decode(encoded_data)
-                # This creates the binary file-like object that Replicate expects
                 api_params["image"] = io.BytesIO(decoded_data)
             else:
-                # If no valid image data, remove the key so it's not sent to Replicate
                 api_params.pop("image", None)
         
-        # Make the long-running API call
         replicate_output = replicate.run(model_string, input=api_params)
 
-        # Normalize the output to always be a list of strings
         processed_output = str(replicate_output) if isinstance(replicate_output, FileOutput) else replicate_output
         if isinstance(processed_output, str):
             return {"video_url": [processed_output]}
         elif isinstance(processed_output, list):
             return {"video_url": [str(item) for item in processed_output]}
         else:
-            # If output is weird, we still need to refund the user.
             raise TypeError("Unexpected model output format.")
 
     except Exception as e:
-        # --- Step 4: If ANY part of the Replicate task fails, refund the credit ---
+        # --- Step 4: If Replicate fails, refund the credit ---
         print(f"Replicate task failed for user {request.user_id}. Refunding credit. Error: {e}")
         try:
             user_ref.update({'credits': firestore.Increment(1)})
         except Exception as refund_e:
             print(f"CRITICAL: FAILED TO REFUND CREDIT for user {request.user_id}. Error: {refund_e}")
         
-        # Inform the user that the generation failed
         raise HTTPException(status_code=500, detail=f"Video generation failed: {e}")
 
 
 # --- Main execution block ---
 if __name__ == "__main__":
     import uvicorn
+    # This setting is primarily for local testing.
+    # The Procfile (`web: uvicorn main:app --host 0.0.0.0 --port $PORT`) will be used by Railway.
+    port = int(os.environ.get("PORT", 8000))
     if not os.getenv("REPLICATE_API_TOKEN"):
         print("CRITICAL ERROR: REPLICATE_API_TOKEN not set.")
     else:
-        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+        uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

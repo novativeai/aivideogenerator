@@ -67,7 +67,8 @@ class VideoRequest(BaseModel):
 # --- Model Mapping ---
 REPLICATE_MODELS = {
     "veo-3-fast": "google/veo-3-fast",
-    "seedance-1-pro": "bytedance/seedance-1-pro"
+    "seedance-1-pro": "bytedance/seedance-1-pro",
+    "wan-2.2": "wan-video/wan-2.2-i2v-a14b"
 }
 
 # --- API Endpoints ---

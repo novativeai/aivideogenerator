@@ -22,6 +22,7 @@ origins = [
     "http://localhost:3000", # Main App (Local)
     "https://ai-video-generator-mvp.netlify.app", # Main App (Deployed)
     "http://localhost:3001", # Admin App (Local)
+    "https://reelzila-admin.netlify.app"
     # "https://your-admin-app.netlify.app", # Admin App (Deployed) - Add this when ready
 ]
 app.add_middleware(

@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import replicate
@@ -12,6 +12,9 @@ import json
 import io
 from replicate.helpers import FileOutput
 from datetime import datetime
+import requests
+import hmac
+import hashlib
 
 # --- Initialization & Setup ---
 load_dotenv()
@@ -22,8 +25,8 @@ origins = [
     "http://localhost:3000", # Main App (Local)
     "https://ai-video-generator-mvp.netlify.app", # Main App (Deployed)
     "http://localhost:3001", # Admin App (Local)
-    "https://reelzila-admin.netlify.app"
-    # "https://your-admin-app.netlify.app", # Admin App (Deployed) - Add this when ready
+     "https://reelzila-admin.netlify.app"
+    # "https://your-admin-app.netlify.app", # Admin App (Deployed)
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -33,7 +36,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Firebase Admin SDK Setup (Railway Compatible) ---
+# --- NEW: Get Paytrust Secrets ---
+PAYTRUST_API_KEY = os.getenv("PAYTRUST_API_KEY")
+PAYTRUST_SIGNING_KEY = os.getenv("PAYTRUST_SIGNING_KEY")
+PAYTRUST_API_URL = "https://api.paytrust.com/v1"
+
+# --- Firebase Admin SDK Setup ---
 db = None
 try:
     firebase_secret_base64 = os.getenv('FIREBASE_SERVICE_ACCOUNT_BASE64')
@@ -53,6 +61,11 @@ class VideoRequest(BaseModel):
     user_id: str
     model_id: str
     params: Dict[str, Any]
+
+class PaymentRequest(BaseModel):
+    userId: str
+    plan: str | None = None
+    customAmount: int | None = None
 
 class AdminUserCreateRequest(BaseModel):
     email: str
@@ -112,13 +125,97 @@ admin_dependency = Depends(check_is_admin)
 # =========================
 # === PUBLIC ENDPOINTS ===
 # =========================
+
+@app.post("/create-payment")
+async def create_payment(request: PaymentRequest):
+    if not db: raise HTTPException(status_code=500, detail="Database not initialized.")
+    user_ref = db.collection('users').document(request.userId)
+    user_doc = user_ref.get()
+    if not user_doc.exists: raise HTTPException(status_code=404, detail="User not found.")
+    user_data = user_doc.to_dict()
+
+    amount = 0
+    credits_to_add = 0
+    description = ""
+    if request.plan == "Pro":
+        amount = 2200
+        credits_to_add = 250
+        description = "Pro Plan Subscription"
+    elif request.customAmount and request.customAmount > 0:
+        amount = request.customAmount * 100
+        credits_to_add = request.customAmount * 10
+        description = f"{credits_to_add} Credits Purchase"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid payment request.")
+
+    payment_ref = user_ref.collection('payments').document()
+    payment_ref.set({
+        "amount": amount / 100, "creditsPurchased": credits_to_add,
+        "createdAt": firestore.SERVER_TIMESTAMP, "status": "pending", "type": description
+    })
+
+    headers = {"Authorization": f"Bearer {PAYTRUST_API_KEY}"}
+    payload = {
+        "amount": amount,
+        "currency": "eur",
+        "customer": {"email": user_data.get("email"), "name": user_data.get("name", "Valued Customer")},
+        "redirect_url": "https://ai-video-generator-mvp.netlify.app/payment/success",
+        "cancel_url": "https://ai-video-generator-mvp.netlify.app/payment/cancel",
+        "metadata": {
+            "internal_payment_id": payment_ref.id,
+            "user_id": request.userId
+        }
+    }
+    try:
+        response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
+        response.raise_for_status()
+        payment_data = response.json()
+        payment_gateway_id = payment_data.get("id")
+        redirect_url = payment_data.get("redirect_url")
+        payment_ref.update({"paymentGatewayId": payment_gateway_id})
+        return {"paymentUrl": redirect_url}
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create payment session: {e}")
+
+@app.post("/paytrust-webhook")
+async def paytrust_webhook(request: Request, paytrust_signature: str = Header(None)):
+    if not PAYTRUST_SIGNING_KEY: raise HTTPException(status_code=500, detail="Signing key not configured.")
+    
+    body = await request.body()
+    expected_signature = hmac.new(key=PAYTRUST_SIGNING_KEY.encode(), msg=body, digestmod=hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_signature, paytrust_signature):
+        raise HTTPException(status_code=400, detail="Invalid signature.")
+
+    payload = json.loads(body)
+    event_type = payload.get("event")
+    data = payload.get("data", {})
+    metadata = data.get("metadata", {})
+    internal_payment_id = metadata.get("internal_payment_id")
+    user_id = metadata.get("user_id")
+
+    if not internal_payment_id or not user_id:
+        return {"status": "error", "message": "Missing metadata"}
+
+    payment_ref = db.collection('users').document(user_id).collection('payments').document(internal_payment_id)
+    
+    if event_type == "payment.succeeded":
+        payment_data = payment_ref.get().to_dict()
+        payment_ref.update({"status": "paid"})
+        user_ref = db.collection('users').document(user_id)
+        user_ref.update({"credits": firestore.Increment(payment_data.get("creditsPurchased", 0))})
+        print(f"Payment successful for user {user_id}. Credits added.")
+    elif event_type == "payment.failed":
+        payment_ref.update({"status": "failed"})
+        print(f"Payment failed for user {user_id}.")
+
+    return {"status": "received"}
+
 @app.post("/generate-video")
 async def generate_media(request: VideoRequest):
     if not db: raise HTTPException(status_code=500, detail="Firestore database not initialized.")
     user_ref = db.collection('users').document(request.user_id)
     model_string = REPLICATE_MODELS.get(request.model_id)
     if not model_string: raise HTTPException(status_code=400, detail="Invalid model ID provided.")
-
     try:
         user_doc = user_ref.get()
         if not user_doc.exists or user_doc.to_dict().get('credits', 0) <= 0:
@@ -126,7 +223,6 @@ async def generate_media(request: VideoRequest):
         user_ref.update({'credits': firestore.Increment(-1)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to manage credits: {e}")
-
     try:
         api_params = request.params.copy()
         image_param_name = MODEL_IMAGE_PARAMS.get(request.model_id)
@@ -137,7 +233,6 @@ async def generate_media(request: VideoRequest):
                 api_params[image_param_name] = io.BytesIO(base64.b64decode(encoded_data))
             else:
                 api_params.pop(image_param_name, None)
-        
         replicate_output = replicate.run(model_string, input=api_params)
         processed_output = str(replicate_output) if isinstance(replicate_output, FileOutput) else replicate_output
         if isinstance(processed_output, str):
@@ -148,16 +243,13 @@ async def generate_media(request: VideoRequest):
             raise TypeError("Unexpected model output format.")
     except Exception as e:
         print(f"Replicate task failed for user {request.user_id}. Refunding credit. Error: {e}")
-        try:
-            user_ref.update({'credits': firestore.Increment(1)})
-        except Exception as refund_e:
-            print(f"CRITICAL: FAILED TO REFUND CREDIT for user {request.user_id}. Error: {refund_e}")
+        try: user_ref.update({'credits': firestore.Increment(1)})
+        except Exception as refund_e: print(f"CRITICAL: FAILED TO REFUND CREDIT for user {request.user_id}. Error: {refund_e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
 
 # ========================
 # === ADMIN ENDPOINTS ===
 # ========================
-
 @app.get("/admin/stats", dependencies=[admin_dependency])
 async def get_admin_stats():
     users_collection = db.collection('users').stream()
@@ -169,46 +261,30 @@ async def get_all_users():
     users_docs = db.collection('users').stream()
     for user in users_docs:
         user_data = user.to_dict()
-        users_list.append({
-            "id": user.id,
-            "email": user_data.get("email"),
-            "plan": user_data.get("activePlan", "Starter Plan"),
-            "generationCount": 0 # Placeholder: Calculating this is a heavy operation
-        })
+        users_list.append({ "id": user.id, "email": user_data.get("email"), "plan": user_data.get("activePlan", "Starter Plan"), "generationCount": 0 })
     return users_list
 
 @app.post("/admin/users", dependencies=[admin_dependency])
 async def create_user_account(request: AdminUserCreateRequest):
     try:
         user = auth.create_user(email=request.email, password=request.password)
-        db.collection('users').document(user.uid).set({
-            "email": user.email,
-            "createdAt": firestore.SERVER_TIMESTAMP,
-            "credits": 10,
-            "activePlan": "Starter"
-        })
+        db.collection('users').document(user.uid).set({ "email": user.email, "createdAt": firestore.SERVER_TIMESTAMP, "credits": 10, "activePlan": "Starter" })
         return {"message": "User created successfully", "uid": user.uid}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e: raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/admin/users/{user_id}", dependencies=[admin_dependency])
 async def get_user_details(user_id: str):
     user_doc = db.collection('users').document(user_id).get()
-    if not user_doc.exists:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+    if not user_doc.exists: raise HTTPException(status_code=404, detail="User not found")
     transactions = []
     trans_docs = db.collection('users').document(user_id).collection('payments').order_by("createdAt", direction=firestore.Query.DESCENDING).stream()
     for doc in trans_docs:
         trans_data = doc.to_dict()
         trans_data["id"] = doc.id
-        if 'createdAt' in trans_data and trans_data['createdAt']:
-            trans_data['createdAt'] = trans_data['createdAt'].strftime('%d/%m/%Y')
+        if 'createdAt' in trans_data and trans_data['createdAt']: trans_data['createdAt'] = trans_data['createdAt'].strftime('%d/%m/%Y')
         transactions.append(trans_data)
-        
     user_profile = user_doc.to_dict()
     user_profile['name'] = user_profile.get('name', user_profile.get('email', ''))
-    
     return {"profile": user_profile, "transactions": transactions}
 
 @app.put("/admin/users/{user_id}", dependencies=[admin_dependency])
@@ -230,24 +306,14 @@ async def gift_user_credits(user_id: str, request: AdminCreditRequest):
 @app.post("/admin/transactions/{user_id}", dependencies=[admin_dependency])
 async def add_transaction(user_id: str, request: AdminTransactionRequest):
     trans_date = datetime.strptime(request.date, '%d/%m/%Y')
-    db.collection('users').document(user_id).collection('payments').add({
-        "createdAt": trans_date,
-        "amount": request.amount,
-        "type": request.type,
-        "status": request.status
-    })
+    db.collection('users').document(user_id).collection('payments').add({ "createdAt": trans_date, "amount": request.amount, "type": request.type, "status": request.status })
     return {"message": "Transaction added successfully"}
 
 @app.put("/admin/transactions/{user_id}/{trans_id}", dependencies=[admin_dependency])
 async def update_transaction(user_id: str, trans_id: str, request: AdminTransactionRequest):
     trans_ref = db.collection('users').document(user_id).collection('payments').document(trans_id)
     trans_date = datetime.strptime(request.date, '%d/%m/%Y')
-    trans_ref.update({
-        "createdAt": trans_date,
-        "amount": request.amount,
-        "type": request.type,
-        "status": request.status
-    })
+    trans_ref.update({ "createdAt": trans_date, "amount": request.amount, "type": request.type, "status": request.status })
     return {"message": "Transaction updated successfully"}
 
 @app.delete("/admin/transactions/{user_id}/{trans_id}", dependencies=[admin_dependency])
@@ -259,7 +325,5 @@ async def delete_transaction(user_id: str, trans_id: str):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    if not os.getenv("REPLICATE_API_TOKEN"):
-        print("CRITICAL ERROR: REPLICATE_API_TOKEN environment variable not set.")
-    else:
-        uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    if not os.getenv("REPLICATE_API_TOKEN"): print("CRITICAL ERROR: REPLICATE_API_TOKEN environment variable not set.")
+    else: uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

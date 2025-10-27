@@ -140,7 +140,6 @@ async def create_payment(request: PaymentRequest):
     user_data = user_doc.to_dict()
 
     paytrust_customer_id = user_data.get("paytrustCustomerId")
-
     if not paytrust_customer_id:
         try:
             customer_payload = {"email": user_data.get("email"), "name": user_data.get("name", "Valued Customer")}
@@ -163,21 +162,68 @@ async def create_payment(request: PaymentRequest):
     
     headers = {"Authorization": f"Bearer {PAYTRUST_API_KEY}"}
     payload = {
-        "amount": amount, "currency": "eur",
         "customer": paytrust_customer_id,
-        "setup_future_usage": "on_session",
-        "redirect_url": "https://ai-video-generator-mvp.netlify.app/payment/success",
+        "mode": "payment",
+        "line_items": [{
+            "price_data": {
+                "currency": "eur",
+                "product_data": {
+                    "name": f"{credits_to_add} Credits Pack"
+                },
+                "unit_amount": amount
+            },
+            "quantity": 1
+        }],
+        "success_url": "https://ai-video-generator-mvp.netlify.app/payment/success?session_id={CHECKOUT_SESSION_ID}",
         "cancel_url": "https://ai-video-generator-mvp.netlify.app/payment/cancel",
         "metadata": { "internal_payment_id": payment_ref.id, "user_id": request.userId }
     }
     try:
-        response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
+        response = requests.post(f"{PAYTRUST_API_URL}/checkout/sessions", json=payload, headers=headers)
         response.raise_for_status()
-        payment_data = response.json()
-        payment_ref.update({"paymentGatewayId": payment_data.get("id")})
-        return {"paymentUrl": payment_data.get("redirect_url")}
+        session_data = response.json()
+        payment_ref.update({"paymentGatewayId": session_data.get("id")})
+        return {"paymentUrl": session_data.get("url")}
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Failed to create payment session: {e}")
+
+@app.post("/create-subscription")
+async def create_subscription(request: SubscriptionRequest):
+    if not db: raise HTTPException(status_code=500, detail="Database not initialized.")
+    user_ref = db.collection('users').document(request.userId)
+    user_doc = user_ref.get()
+    if not user_doc.exists: raise HTTPException(status_code=404, detail="User not found.")
+    user_data = user_doc.to_dict()
+
+    paytrust_customer_id = user_data.get("paytrustCustomerId")
+    if not paytrust_customer_id:
+        try:
+            customer_payload = {"email": user_data.get("email"), "name": user_data.get("name", "Valued Customer")}
+            headers = {"Authorization": f"Bearer {PAYTRUST_API_KEY}"}
+            customer_response = requests.post(f"{PAYTRUST_API_URL}/customers", json=customer_payload, headers=headers)
+            customer_response.raise_for_status()
+            paytrust_customer_id = customer_response.json().get("id")
+            user_ref.update({"paytrustCustomerId": paytrust_customer_id})
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=500, detail=f"Failed to create customer in payment gateway: {e}")
+
+    headers = {"Authorization": f"Bearer {PAYTRUST_API_KEY}"}
+    payload = {
+        "customer": paytrust_customer_id,
+        "mode": "subscription",
+        "line_items": [{"price": request.priceId, "quantity": 1}],
+        "success_url": "https://ai-video-generator-mvp.netlify.app/payment/success?session_id={CHECKOUT_SESSION_ID}",
+        "cancel_url": "https://ai-video-generator-mvp.netlify.app/payment/cancel",
+        "metadata": { "user_id": request.userId }
+    }
+    try:
+        response = requests.post(f"{PAYTRUST_API_URL}/checkout/sessions", json=payload, headers=headers)
+        response.raise_for_status()
+        session_data = response.json()
+        user_ref.update({ "subscriptionId": session_data.get("subscription"), "activePlan": "Pro" })
+        return {"paymentUrl": session_data.get("url")}
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create subscription session: {e}")
 
 @app.post("/create-customer-portal-session")
 async def create_customer_portal(request: PortalRequest):
@@ -221,16 +267,16 @@ async def paytrust_webhook(request: Request, paytrust_signature: str = Header(No
             user_doc = next(users_query, None)
             if user_doc:
                 user_ref = user_doc.reference
-                user_ref.update({"credits": firestore.Increment(250)})
+                user_ref.update({"credits": firestore.Increment(250)}) # Pro plan credits
                 print(f"Subscription payment successful for user {user_doc.id}. Pro credits added.")
     
-    elif event_type in ["payment.succeeded", "payment.failed"]:
+    elif event_type == "checkout.session.completed":
         metadata = data.get("metadata", {})
         internal_payment_id = metadata.get("internal_payment_id")
         user_id = metadata.get("user_id")
         if internal_payment_id and user_id:
             payment_ref = db.collection('users').document(user_id).collection('payments').document(internal_payment_id)
-            if event_type == "payment.succeeded":
+            if data.get("payment_status") == "paid":
                 payment_data = payment_ref.get().to_dict()
                 payment_ref.update({"status": "paid"})
                 user_ref = db.collection('users').document(user_id)

@@ -47,19 +47,49 @@ PRICE_ID_TO_CREDITS = {
 
 # --- Firebase Admin SDK Setup ---
 db = None
+firebase_init_error = None
+
 try:
+    print("=== Starting Firebase Initialization ===")
+    
     firebase_secret_base64 = os.getenv('FIREBASE_SERVICE_ACCOUNT_BASE64')
-    if not firebase_secret_base64: raise ValueError("FIREBASE_SERVICE_ACCOUNT_BASE64 environment variable not found.")
-    decoded_secret = base64.b64decode(firebase_secret_base64).decode('utf-8')
-    service_account_info = json.loads(decoded_secret)
+    if not firebase_secret_base64:
+        raise ValueError("FIREBASE_SERVICE_ACCOUNT_BASE64 environment variable not found.")
+    
+    print(f"✓ Environment variable found (length: {len(firebase_secret_base64)})")
+    
+    try:
+        decoded_secret = base64.b64decode(firebase_secret_base64).decode('utf-8')
+        print("✓ Base64 decoding successful")
+    except Exception as decode_error:
+        raise ValueError(f"Failed to decode base64: {decode_error}")
+    
+    try:
+        service_account_info = json.loads(decoded_secret)
+        print(f"✓ JSON parsing successful (Project: {service_account_info.get('project_id', 'UNKNOWN')})")
+    except Exception as json_error:
+        raise ValueError(f"Failed to parse JSON: {json_error}")
+    
     bucket_name = os.getenv('FIREBASE_STORAGE_BUCKET')
-    if not bucket_name: raise ValueError("FIREBASE_STORAGE_BUCKET env var not set.")
+    if not bucket_name:
+        raise ValueError("FIREBASE_STORAGE_BUCKET env var not set.")
+    print(f"✓ Storage bucket: {bucket_name}")
+    
     if not firebase_admin._apps:
         cred = credentials.Certificate(service_account_info)
         firebase_admin.initialize_app(cred, {'storageBucket': bucket_name})
+        print("✓ Firebase Admin SDK initialized")
+    
     db = firestore.client()
+    print("✓ Firestore client ready")
+    print("=== Firebase Initialization Complete ===")
+    
 except Exception as e:
-    print(f"CRITICAL ERROR during Firebase init: {e}")
+    firebase_init_error = str(e)
+    print(f"❌ CRITICAL ERROR during Firebase init: {e}")
+    print(f"Error type: {type(e).__name__}")
+    import traceback
+    traceback.print_exc()
 
 # --- Pydantic Models ---
 class VideoRequest(BaseModel):
@@ -136,6 +166,21 @@ admin_dependency = Depends(check_is_admin)
 # =========================
 # === PUBLIC ENDPOINTS ===
 # =========================
+
+@app.get("/health")
+async def health_check():
+    """Check if backend services are initialized properly"""
+    return {
+        "status": "healthy" if db else "unhealthy",
+        "database": "initialized" if db else "not initialized",
+        "firebase_error": firebase_init_error,
+        "environment": {
+            "has_firebase_secret": bool(os.getenv('FIREBASE_SERVICE_ACCOUNT_BASE64')),
+            "has_storage_bucket": bool(os.getenv('FIREBASE_STORAGE_BUCKET')),
+            "has_paytrust_key": bool(os.getenv('PAYTRUST_API_KEY')),
+            "has_replicate_token": bool(os.getenv('REPLICATE_API_TOKEN')),
+        }
+    }
 
 @app.post("/create-payment")
 async def create_payment(request: PaymentRequest):

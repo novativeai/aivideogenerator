@@ -192,6 +192,8 @@ async def create_payment(request: PaymentRequest):
     if not db: 
         raise HTTPException(status_code=500, detail="Database not initialized.")
     
+    print(f"=== Create Payment Request for user {request.userId} ===")
+    
     user_ref = db.collection('users').document(request.userId)
     user_doc = user_ref.get()
     if not user_doc.exists: 
@@ -205,6 +207,8 @@ async def create_payment(request: PaymentRequest):
     amount = request.customAmount
     credits_to_add = request.customAmount * 10
     
+    print(f"Amount: ${amount}, Credits: {credits_to_add}")
+    
     # Create pending payment record in Firestore
     payment_ref = user_ref.collection('payments').document()
     payment_id = payment_ref.id
@@ -216,6 +220,8 @@ async def create_payment(request: PaymentRequest):
         "type": "Purchase"
     })
     
+    print(f"Payment record created: {payment_id}")
+    
     # Prepare PayTrust payment request
     headers = {
         "accept": "application/json",
@@ -223,12 +229,14 @@ async def create_payment(request: PaymentRequest):
         "authorization": f"Bearer {PAYTRUST_API_KEY}"
     }
     
+    backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
+    
     payload = {
         "paymentType": "DEPOSIT",
         "amount": amount,
         "currency": "EUR",
         "returnUrl": f"https://ai-video-generator-mvp.netlify.app/payment/success?payment_id={payment_id}",
-        "webhookUrl": f"{os.getenv('BACKEND_URL', 'https://your-backend-url.com')}/paytrust-webhook",
+        "webhookUrl": f"{backend_url}/paytrust-webhook",
         "referenceId": f"payment_id={payment_id};user_id={request.userId}",
         "customer": {
             "referenceId": request.userId,
@@ -239,10 +247,19 @@ async def create_payment(request: PaymentRequest):
         "paymentMethod": "BASIC_CARD"
     }
     
+    print(f"PayTrust API URL: {PAYTRUST_API_URL}/payments")
+    print(f"Payload: {json.dumps(payload, indent=2)}")
+    
     try:
         response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
+        
+        print(f"PayTrust Response Status: {response.status_code}")
+        print(f"PayTrust Response Body: {response.text}")
+        
         response.raise_for_status()
         payment_data = response.json()
+        
+        print(f"PayTrust Payment Data: {json.dumps(payment_data, indent=2)}")
         
         # Update payment record with PayTrust payment ID
         payment_ref.update({
@@ -251,16 +268,35 @@ async def create_payment(request: PaymentRequest):
         })
         
         # PayTrust returns the payment URL in the redirectUrl field
-        return {"paymentUrl": payment_data.get("redirectUrl")}
+        redirect_url = payment_data.get("redirectUrl") or payment_data.get("redirect_url") or payment_data.get("paymentUrl")
+        
+        if not redirect_url:
+            print(f"ERROR: No redirect URL in response. Full response: {payment_data}")
+            raise HTTPException(status_code=500, detail=f"PayTrust did not return a payment URL. Response: {payment_data}")
+        
+        print(f"✓ Payment URL obtained: {redirect_url}")
+        return {"paymentUrl": redirect_url}
+        
+    except requests.exceptions.HTTPError as e:
+        error_detail = f"PayTrust API Error ({e.response.status_code}): {e.response.text}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
     except requests.exceptions.RequestException as e:
-        print(f"PayTrust API Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create payment: {str(e)}")
+        error_detail = f"Request failed: {str(e)}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
+    except Exception as e:
+        error_detail = f"Unexpected error: {str(e)}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/create-subscription")
 async def create_subscription(request: SubscriptionRequest):
     """Create a recurring subscription using PayTrust"""
     if not db: 
         raise HTTPException(status_code=500, detail="Database not initialized.")
+    
+    print(f"=== Create Subscription Request for user {request.userId} ===")
     
     user_ref = db.collection('users').document(request.userId)
     user_doc = user_ref.get()
@@ -278,6 +314,8 @@ async def create_subscription(request: SubscriptionRequest):
     credits_per_month = subscription_info["credits"]
     plan_name = subscription_info["planName"]
     
+    print(f"Plan: {plan_name}, Amount: ${amount}, Credits/month: {credits_per_month}")
+    
     # Create subscription record in Firestore
     subscription_ref = user_ref.collection('subscriptions').document()
     subscription_id = subscription_ref.id
@@ -290,6 +328,8 @@ async def create_subscription(request: SubscriptionRequest):
         "status": "pending"
     })
     
+    print(f"Subscription record created: {subscription_id}")
+    
     # Prepare PayTrust recurring payment request
     headers = {
         "accept": "application/json",
@@ -301,12 +341,14 @@ async def create_subscription(request: SubscriptionRequest):
     from datetime import timedelta
     next_billing = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
     
+    backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
+    
     payload = {
         "paymentType": "DEPOSIT",
         "amount": amount,
         "currency": "EUR",
         "returnUrl": f"https://ai-video-generator-mvp.netlify.app/payment/success?subscription_id={subscription_id}",
-        "webhookUrl": f"{os.getenv('BACKEND_URL', 'https://your-backend-url.com')}/paytrust-webhook",
+        "webhookUrl": f"{backend_url}/paytrust-webhook",
         "startRecurring": True,
         "subscription": {
             "frequencyUnit": "MONTH",
@@ -324,10 +366,19 @@ async def create_subscription(request: SubscriptionRequest):
         "paymentMethod": "BASIC_CARD"
     }
     
+    print(f"PayTrust API URL: {PAYTRUST_API_URL}/payments")
+    print(f"Payload: {json.dumps(payload, indent=2)}")
+    
     try:
         response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
+        
+        print(f"PayTrust Response Status: {response.status_code}")
+        print(f"PayTrust Response Body: {response.text}")
+        
         response.raise_for_status()
         payment_data = response.json()
+        
+        print(f"PayTrust Payment Data: {json.dumps(payment_data, indent=2)}")
         
         # Update subscription record with PayTrust IDs
         subscription_ref.update({
@@ -335,10 +386,27 @@ async def create_subscription(request: SubscriptionRequest):
             "paytrustTransactionId": payment_data.get("transactionId")
         })
         
-        return {"paymentUrl": payment_data.get("redirectUrl")}
+        redirect_url = payment_data.get("redirectUrl") or payment_data.get("redirect_url") or payment_data.get("paymentUrl")
+        
+        if not redirect_url:
+            print(f"ERROR: No redirect URL in response. Full response: {payment_data}")
+            raise HTTPException(status_code=500, detail=f"PayTrust did not return a payment URL. Response: {payment_data}")
+        
+        print(f"✓ Payment URL obtained: {redirect_url}")
+        return {"paymentUrl": redirect_url}
+        
+    except requests.exceptions.HTTPError as e:
+        error_detail = f"PayTrust API Error ({e.response.status_code}): {e.response.text}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
     except requests.exceptions.RequestException as e:
-        print(f"PayTrust API Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create subscription: {str(e)}")
+        error_detail = f"Request failed: {str(e)}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
+    except Exception as e:
+        error_detail = f"Unexpected error: {str(e)}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/paytrust-webhook")
 async def paytrust_webhook(request: Request):

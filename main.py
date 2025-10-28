@@ -261,14 +261,17 @@ async def create_payment(request: PaymentRequest):
         
         print(f"PayTrust Payment Data: {json.dumps(payment_data, indent=2)}")
         
+        # PayTrust wraps response in a "result" object
+        result = payment_data.get("result", payment_data)
+        
         # Update payment record with PayTrust payment ID
         payment_ref.update({
-            "paytrustPaymentId": payment_data.get("id"),
-            "paytrustTransactionId": payment_data.get("transactionId")
+            "paytrustPaymentId": result.get("id"),
+            "paytrustTransactionId": result.get("transactionId")
         })
         
-        # PayTrust returns the payment URL in the redirectUrl field
-        redirect_url = payment_data.get("redirectUrl") or payment_data.get("redirect_url") or payment_data.get("paymentUrl")
+        # Get redirect URL from result object
+        redirect_url = result.get("redirectUrl") or result.get("redirect_url") or result.get("paymentUrl")
         
         if not redirect_url:
             print(f"ERROR: No redirect URL in response. Full response: {payment_data}")
@@ -380,13 +383,17 @@ async def create_subscription(request: SubscriptionRequest):
         
         print(f"PayTrust Payment Data: {json.dumps(payment_data, indent=2)}")
         
+        # PayTrust wraps response in a "result" object
+        result = payment_data.get("result", payment_data)
+        
         # Update subscription record with PayTrust IDs
         subscription_ref.update({
-            "paytrustPaymentId": payment_data.get("id"),
-            "paytrustTransactionId": payment_data.get("transactionId")
+            "paytrustPaymentId": result.get("id"),
+            "paytrustTransactionId": result.get("transactionId")
         })
         
-        redirect_url = payment_data.get("redirectUrl") or payment_data.get("redirect_url") or payment_data.get("paymentUrl")
+        # Get redirect URL from result object
+        redirect_url = result.get("redirectUrl") or result.get("redirect_url") or result.get("paymentUrl")
         
         if not redirect_url:
             print(f"ERROR: No redirect URL in response. Full response: {payment_data}")

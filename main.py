@@ -70,14 +70,18 @@ try:
     except Exception as json_error:
         raise ValueError(f"Failed to parse JSON: {json_error}")
     
+    # Make storage bucket optional
     bucket_name = os.getenv('FIREBASE_STORAGE_BUCKET')
-    if not bucket_name:
-        raise ValueError("FIREBASE_STORAGE_BUCKET env var not set.")
-    print(f"✓ Storage bucket: {bucket_name}")
+    if bucket_name:
+        print(f"✓ Storage bucket: {bucket_name}")
+    else:
+        print("⚠ Storage bucket not configured (optional)")
     
     if not firebase_admin._apps:
         cred = credentials.Certificate(service_account_info)
-        firebase_admin.initialize_app(cred, {'storageBucket': bucket_name})
+        # Initialize with or without storage bucket
+        init_config = {'storageBucket': bucket_name} if bucket_name else {}
+        firebase_admin.initialize_app(cred, init_config)
         print("✓ Firebase Admin SDK initialized")
     
     db = firestore.client()

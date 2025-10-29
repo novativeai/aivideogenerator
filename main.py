@@ -204,10 +204,13 @@ async def create_payment(request: PaymentRequest):
     if not request.customAmount or request.customAmount <= 0:
         raise HTTPException(status_code=400, detail="Invalid custom amount.")
     
+    if request.customAmount > 1000:
+        raise HTTPException(status_code=400, detail="Maximum amount is €1,000.")
+    
     amount = request.customAmount
     credits_to_add = request.customAmount * 10
     
-    print(f"Amount: ${amount}, Credits: {credits_to_add}")
+    print(f"Amount: €{amount}, Credits: {credits_to_add}")
     
     # Create pending payment record in Firestore
     payment_ref = user_ref.collection('payments').document()
@@ -222,7 +225,7 @@ async def create_payment(request: PaymentRequest):
     
     print(f"Payment record created: {payment_id}")
     
-    # Prepare PayTrust payment request
+    # Prepare PayTrust payment request - simplified for one-time purchase
     headers = {
         "accept": "application/json",
         "content-type": "application/json",
@@ -231,6 +234,7 @@ async def create_payment(request: PaymentRequest):
     
     backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
     
+    # Simplified payload matching your example
     payload = {
         "paymentType": "DEPOSIT",
         "amount": amount,
@@ -243,8 +247,7 @@ async def create_payment(request: PaymentRequest):
             "firstName": user_data.get("name", "").split()[0] if user_data.get("name") else "User",
             "lastName": user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer",
             "email": user_data.get("email", "customer@example.com")
-        },
-        "paymentMethod": "BASIC_CARD"
+        }
     }
     
     print(f"PayTrust API URL: {PAYTRUST_API_URL}/payments")
@@ -429,15 +432,29 @@ async def paytrust_webhook(request: Request):
         body = await request.body()
         payload = json.loads(body)
         
-        print(f"PayTrust Webhook received: {json.dumps(payload, indent=2)}")
+        print("=" * 80)
+        print(f"WEBHOOK RECEIVED: {datetime.now()}")
+        print(f"Payload: {json.dumps(payload, indent=2)}")
+        print("=" * 80)
         
-        # Extract event data
-        event_type = payload.get("type")
-        state = payload.get("state")
-        transaction_id = payload.get("transactionId")
-        payment_id = payload.get("id")
-        reference_id = payload.get("referenceId", "")
-        amount = payload.get("amount")
+        # Extract event data from PayTrust response
+        # PayTrust may send data in different structures, handle both
+        if "result" in payload:
+            event_data = payload.get("result", {})
+        else:
+            event_data = payload
+        
+        state = event_data.get("state") or payload.get("state")
+        transaction_id = event_data.get("transactionId") or event_data.get("id")
+        payment_id = event_data.get("id")
+        reference_id = event_data.get("referenceId", "")
+        amount = event_data.get("amount")
+        payment_type = event_data.get("paymentType")
+        
+        print(f"State: {state}")
+        print(f"Transaction ID: {transaction_id}")
+        print(f"Reference ID: {reference_id}")
+        print(f"Amount: {amount}")
         
         # Parse referenceId to extract metadata
         metadata = {}
@@ -452,20 +469,28 @@ async def paytrust_webhook(request: Request):
         subscription_doc_id = metadata.get("subscription_id")
         price_id = metadata.get("price_id")
         
+        print(f"Extracted Metadata: {metadata}")
+        
         if not user_id:
-            print("Warning: No user_id in webhook payload")
+            print("⚠️ WARNING: No user_id in webhook payload")
             return {"status": "received", "warning": "No user_id found"}
         
         user_ref = db.collection('users').document(user_id)
         
         # Handle different payment states
         if state == "SUCCESS":
+            print(f"✓ Processing SUCCESS state for user {user_id}")
+            
             # Check if this is a subscription payment or one-time payment
             if subscription_doc_id or price_id:
+                print(f"📅 Subscription payment detected")
+                
                 # This is a subscription payment (initial or recurring)
                 subscription_info = PRICE_ID_TO_CREDITS.get(price_id) if price_id else None
                 credits_to_add = subscription_info["credits"] if subscription_info else 250  # Default to Creator plan
                 plan_name = subscription_info["planName"] if subscription_info else "Creator"
+                
+                print(f"Adding {credits_to_add} subscription credits for {plan_name} plan")
                 
                 # Update user credits and subscription status
                 user_ref.update({
@@ -477,12 +502,16 @@ async def paytrust_webhook(request: Request):
                 # Update subscription document if it exists
                 if subscription_doc_id:
                     sub_ref = user_ref.collection('subscriptions').document(subscription_doc_id)
-                    if sub_ref.get().exists:
+                    sub_doc = sub_ref.get()
+                    if sub_doc.exists:
                         sub_ref.update({
                             "status": "active",
                             "lastPaymentDate": firestore.SERVER_TIMESTAMP,
                             "paytrustTransactionId": transaction_id
                         })
+                        print(f"✓ Updated subscription document: {subscription_doc_id}")
+                    else:
+                        print(f"⚠️ Subscription document not found: {subscription_doc_id}")
                 
                 # Create payment record for this subscription payment
                 user_ref.collection('payments').add({
@@ -495,9 +524,11 @@ async def paytrust_webhook(request: Request):
                     "paytrustTransactionId": transaction_id
                 })
                 
-                print(f"Subscription payment successful for user {user_id}. Added {credits_to_add} credits.")
+                print(f"✓ Subscription payment successful for user {user_id}. Added {credits_to_add} credits.")
             
             elif payment_doc_id:
+                print(f"💳 One-time payment detected: {payment_doc_id}")
+                
                 # This is a one-time payment
                 payment_ref = user_ref.collection('payments').document(payment_doc_id)
                 payment_doc = payment_ref.get()
@@ -505,6 +536,8 @@ async def paytrust_webhook(request: Request):
                 if payment_doc.exists:
                     payment_data = payment_doc.to_dict()
                     credits_to_add = payment_data.get("creditsPurchased", 0)
+                    
+                    print(f"Adding {credits_to_add} credits from one-time purchase")
                     
                     # Update payment status
                     payment_ref.update({
@@ -518,38 +551,58 @@ async def paytrust_webhook(request: Request):
                         "credits": firestore.Increment(credits_to_add)
                     })
                     
-                    print(f"One-time payment successful for user {user_id}. Added {credits_to_add} credits.")
+                    # Verify credits were added
+                    updated_user = user_ref.get().to_dict()
+                    new_credit_balance = updated_user.get("credits", 0)
+                    
+                    print(f"✓ One-time payment successful for user {user_id}")
+                    print(f"✓ Added {credits_to_add} credits")
+                    print(f"✓ New credit balance: {new_credit_balance}")
                 else:
-                    print(f"Warning: Payment document {payment_doc_id} not found")
+                    print(f"❌ ERROR: Payment document {payment_doc_id} not found")
+            else:
+                print(f"⚠️ WARNING: No payment_id or subscription_id found in metadata")
         
         elif state == "FAIL" or state == "DECLINED":
+            print(f"❌ Payment FAILED or DECLINED for user {user_id}")
+            
             # Handle failed payments
             if payment_doc_id:
                 payment_ref = user_ref.collection('payments').document(payment_doc_id)
-                if payment_ref.get().exists:
+                payment_doc = payment_ref.get()
+                if payment_doc.exists:
                     payment_ref.update({
                         "status": "failed",
                         "failedAt": firestore.SERVER_TIMESTAMP
                     })
+                    print(f"✓ Updated payment status to failed: {payment_doc_id}")
             
             if subscription_doc_id:
                 sub_ref = user_ref.collection('subscriptions').document(subscription_doc_id)
-                if sub_ref.get().exists:
+                sub_doc = sub_ref.get()
+                if sub_doc.exists:
                     sub_ref.update({
                         "status": "failed",
                         "failedAt": firestore.SERVER_TIMESTAMP
                     })
+                    print(f"✓ Updated subscription status to failed: {subscription_doc_id}")
             
             print(f"Payment failed for user {user_id}")
         
-        elif state == "PENDING":
+        elif state == "PENDING" or state == "CHECKOUT":
             # Payment is still processing
-            print(f"Payment pending for user {user_id}")
+            print(f"⏳ Payment pending/checkout for user {user_id}")
         
+        else:
+            print(f"⚠️ Unknown payment state: {state}")
+        
+        print("=" * 80)
         return {"status": "received"}
     
     except Exception as e:
-        print(f"Webhook processing error: {e}")
+        print(f"❌ WEBHOOK ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         # Return 200 even on errors to prevent PayTrust from retrying
         return {"status": "error", "message": str(e)}
 

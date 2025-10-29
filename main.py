@@ -240,7 +240,7 @@ async def create_payment(request: PaymentRequest):
         "amount": amount,
         "currency": "EUR",
         "returnUrl": f"https://ai-video-generator-mvp.netlify.app/payment/success?payment_id={payment_id}",
-        "cancelUrl": f"https://ai-video-generator-mvp.netlify.app/payment/cancel?payment_id={payment_id}",
+        "errorUrl": f"https://ai-video-generator-mvp.netlify.app/payment/cancel?payment_id={payment_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
         "referenceId": f"payment_id={payment_id};user_id={request.userId}",
         "customer": {
@@ -480,8 +480,9 @@ async def paytrust_webhook(request: Request):
         user_ref = db.collection('users').document(user_id)
         
         # Handle different payment states
-        if state == "SUCCESS":
-            print(f"✓ Processing SUCCESS state for user {user_id}")
+        # PayTrust uses: COMPLETED (success), FAILED, DECLINED, PENDING, CHECKOUT
+        if state == "COMPLETED" or state == "SUCCESS":
+            print(f"✓ Processing COMPLETED/SUCCESS state for user {user_id}")
             
             # Check if this is a subscription payment or one-time payment
             if subscription_doc_id or price_id:
@@ -572,7 +573,7 @@ async def paytrust_webhook(request: Request):
             else:
                 print(f"⚠️ WARNING: No payment_id or subscription_id found in metadata")
         
-        elif state == "FAIL" or state == "DECLINED":
+        elif state == "FAIL" or state == "FAILED" or state == "DECLINED":
             print(f"❌ Payment FAILED or DECLINED for user {user_id}")
             
             # Handle failed payments

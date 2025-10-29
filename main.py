@@ -240,6 +240,7 @@ async def create_payment(request: PaymentRequest):
         "amount": amount,
         "currency": "EUR",
         "returnUrl": f"https://ai-video-generator-mvp.netlify.app/payment/success?payment_id={payment_id}",
+        "cancelUrl": f"https://ai-video-generator-mvp.netlify.app/payment/cancel?payment_id={payment_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
         "referenceId": f"payment_id={payment_id};user_id={request.userId}",
         "customer": {
@@ -354,6 +355,7 @@ async def create_subscription(request: SubscriptionRequest):
         "amount": amount,
         "currency": "EUR",
         "returnUrl": f"https://ai-video-generator-mvp.netlify.app/payment/success?subscription_id={subscription_id}",
+        "cancelUrl": f"https://ai-video-generator-mvp.netlify.app/payment/cancel?subscription_id={subscription_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
         "startRecurring": True,
         "subscription": {
@@ -521,7 +523,8 @@ async def paytrust_webhook(request: Request):
                     "status": "paid",
                     "type": "Subscription",
                     "paytrustPaymentId": payment_id,
-                    "paytrustTransactionId": transaction_id
+                    "paytrustTransactionId": transaction_id,
+                    "paidAt": firestore.SERVER_TIMESTAMP
                 })
                 
                 print(f"✓ Subscription payment successful for user {user_id}. Added {credits_to_add} credits.")
@@ -537,14 +540,19 @@ async def paytrust_webhook(request: Request):
                     payment_data = payment_doc.to_dict()
                     credits_to_add = payment_data.get("creditsPurchased", 0)
                     
+                    print(f"Payment status BEFORE update: {payment_data.get('status')}")
                     print(f"Adding {credits_to_add} credits from one-time purchase")
                     
-                    # Update payment status
+                    # ✅ CRITICAL: Update payment status from pending to paid
                     payment_ref.update({
                         "status": "paid",
                         "paidAt": firestore.SERVER_TIMESTAMP,
                         "paytrustTransactionId": transaction_id
                     })
+                    
+                    # Verify status was updated
+                    updated_payment = payment_ref.get().to_dict()
+                    print(f"Payment status AFTER update: {updated_payment.get('status')}")
                     
                     # Add credits to user
                     user_ref.update({
@@ -556,6 +564,7 @@ async def paytrust_webhook(request: Request):
                     new_credit_balance = updated_user.get("credits", 0)
                     
                     print(f"✓ One-time payment successful for user {user_id}")
+                    print(f"✓ Payment status updated: pending → paid")
                     print(f"✓ Added {credits_to_add} credits")
                     print(f"✓ New credit balance: {new_credit_balance}")
                 else:

@@ -25,6 +25,7 @@ origins = [
     "http://localhost:3000",
     "https://ai-video-generator-mvp.netlify.app",
     "http://localhost:3001",
+    "https://reelzila-admin.netlify.app"
 ]
 app.add_middleware(
     CORSMiddleware,

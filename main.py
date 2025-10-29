@@ -356,7 +356,7 @@ async def create_subscription(request: SubscriptionRequest):
         "amount": amount,
         "currency": "EUR",
         "returnUrl": f"https://ai-video-generator-mvp.netlify.app/payment/success?subscription_id={subscription_id}",
-        "cancelUrl": f"https://ai-video-generator-mvp.netlify.app/payment/cancel?subscription_id={subscription_id}",
+        "errorUrl": f"https://ai-video-generator-mvp.netlify.app/payment/cancel?subscription_id={subscription_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
         "startRecurring": True,
         "subscription": {
@@ -761,6 +761,21 @@ async def update_transaction(user_id: str, trans_id: str, request: AdminTransact
 async def delete_transaction(user_id: str, trans_id: str):
     db.collection('users').document(user_id).collection('payments').document(trans_id).delete()
     return {"message": "Transaction deleted successfully"}
+
+@app.post("/admin/users/{user_id}/reset-password", dependencies=[admin_dependency])
+async def reset_user_password(user_id: str, request: dict):
+    """Reset a user's password (admin only)"""
+    new_password = request.get("newPassword")
+    
+    if not new_password or len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    
+    try:
+        # Update password in Firebase Auth
+        auth.update_user(user_id, password=new_password)
+        return {"message": "Password reset successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to reset password: {str(e)}")
 
 # --- Main execution block ---
 if __name__ == "__main__":

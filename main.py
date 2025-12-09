@@ -17,6 +17,11 @@ from datetime import datetime
 import requests
 import hmac
 import hashlib
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # --- Initialization & Setup ---
 load_dotenv()
@@ -40,7 +45,7 @@ if os.getenv('ENV') == 'production':
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

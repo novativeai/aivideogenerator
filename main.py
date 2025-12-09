@@ -150,15 +150,18 @@ class AdminBillingUpdateRequest(BaseModel):
 
 # --- Model Mapping ---
 REPLICATE_MODELS = {
-    "veo-3-fast": "google/veo-3-fast",
+    "kling-2.5": "kwaivgi/kling-v2.5-turbo-pro",
+    "veo-3.1": "google/veo-3.1",
     "seedance-1-pro": "bytedance/seedance-1-pro",
     "wan-2.2": "wan-video/wan-2.2-i2v-a14b",
-    "flux-kontext-pro": "black-forest-labs/flux-kontext-pro"
+    "flux-1.1-pro-ultra": "black-forest-labs/flux-1.1-pro-ultra"
 }
 MODEL_IMAGE_PARAMS = {
+    "kling-2.5": "start_image",
+    "veo-3.1": "image",
     "seedance-1-pro": "image",
     "wan-2.2": "image",
-    "flux-kontext-pro": "input_image",
+    "flux-1.1-pro-ultra": None,
 }
 
 # --- Security Dependency for Admin Routes ---

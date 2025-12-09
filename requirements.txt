@@ -7,3 +7,9 @@ pydantic
 fastapi==0.100.0
 hypercorn==0.14.4
 uvicorn
+requests
+slowapi
+sendgrid>=6.10.0
+pandas>=2.0.0
+reportlab>=4.0.0
+google-api-core>=2.11.0

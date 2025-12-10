@@ -1,0 +1,154 @@
+rules_version = '2';
+
+/**
+ * Firestore Security Rules for AI Video Generator
+ *
+ * CRITICAL SECURITY MEASURES:
+ * 1. Clients cannot directly modify the `credits` field - only server can
+ * 2. Clients cannot modify the `isAdmin` field - prevents privilege escalation
+ * 3. Generation transactions are server-only for audit integrity
+ * 4. Failed refunds collection is server-only for security
+ */
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================================
+    // USERS COLLECTION
+    // ============================================
+    match /users/{userId} {
+      // Allow users to read their own document
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // Allow users to create their own document (on signup)
+      allow create: if request.auth != null
+        && request.auth.uid == userId
+        && !request.resource.data.keys().hasAny(['isAdmin'])
+        && (!request.resource.data.keys().hasAny(['credits']) || request.resource.data.credits == 10);
+
+      // Allow users to update their own document with restrictions
+      allow update: if request.auth != null
+        && request.auth.uid == userId
+        // CRITICAL: Prevent clients from modifying credits directly
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['credits']))
+        // CRITICAL: Prevent clients from modifying isAdmin
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['isAdmin']))
+        // CRITICAL: Prevent clients from modifying sellerProfile.pendingBalance, sellerProfile.withdrawnBalance
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['sellerProfile.pendingBalance', 'sellerProfile.withdrawnBalance']));
+
+      // Users cannot delete their own documents (only admin/server can)
+      allow delete: if false;
+
+      // ============================================
+      // PAYMENTS SUBCOLLECTION
+      // ============================================
+      match /payments/{paymentId} {
+        // Users can read their own payments
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Only server can create/update/delete payments
+        allow create, update, delete: if false;
+      }
+
+      // ============================================
+      // SUBSCRIPTIONS SUBCOLLECTION
+      // ============================================
+      match /subscriptions/{subscriptionId} {
+        // Users can read their own subscriptions
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Only server can create/update/delete subscriptions
+        allow create, update, delete: if false;
+      }
+
+      // ============================================
+      // WITHDRAWAL REQUESTS SUBCOLLECTION (for sellers)
+      // ============================================
+      match /withdrawalRequests/{requestId} {
+        // Users can read their own withdrawal requests
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Users can create withdrawal requests (with restrictions)
+        allow create: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.status == 'pending'
+          && request.resource.data.amount > 0;
+
+        // Only server can update/delete withdrawal requests
+        allow update, delete: if false;
+      }
+    }
+
+    // ============================================
+    // GENERATION TRANSACTIONS COLLECTION
+    // CRITICAL: Server-only for audit trail integrity
+    // ============================================
+    match /generation_transactions/{transactionId} {
+      // Admins can read for audit purposes
+      allow read: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+
+      // Users can read their own transactions
+      allow read: if request.auth != null
+        && resource.data.userId == request.auth.uid;
+
+      // CRITICAL: Only server can create/update/delete transactions
+      allow create, update, delete: if false;
+    }
+
+    // ============================================
+    // FAILED CREDIT REFUNDS COLLECTION
+    // CRITICAL: Server-only for security and integrity
+    // ============================================
+    match /failed_credit_refunds/{refundId} {
+      // Only admins can read failed refunds
+      allow read: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+
+      // CRITICAL: Only server can create/update/delete
+      allow create, update, delete: if false;
+    }
+
+    // ============================================
+    // PROCESSED WEBHOOKS COLLECTION
+    // For idempotency checking - server only
+    // ============================================
+    match /processed_webhooks/{webhookId} {
+      // Only admins can read for debugging
+      allow read: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+
+      // Only server can create/update/delete
+      allow create, update, delete: if false;
+    }
+
+    // ============================================
+    // MARKETPLACE VIDEOS COLLECTION
+    // ============================================
+    match /marketplaceVideos/{videoId} {
+      // Anyone can read marketplace videos (public)
+      allow read: if true;
+
+      // Only admins or the video owner can update
+      allow update: if request.auth != null
+        && (resource.data.sellerId == request.auth.uid
+            || (exists(/databases/$(database)/documents/users/$(request.auth.uid))
+                && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true));
+
+      // Only server/admin can create or delete
+      allow create, delete: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    // ============================================
+    // DEFAULT: Deny all other access
+    // ============================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

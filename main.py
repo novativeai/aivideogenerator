@@ -4,7 +4,8 @@ import sys
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, validator, EmailStr
+from pydantic import BaseModel, validator, EmailStr, Field
+import re
 import replicate
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
@@ -17,16 +18,23 @@ from datetime import datetime
 import requests
 import hmac
 import hashlib
-from slowapi import Limiter
+from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 # Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # --- Initialization & Setup ---
 load_dotenv()
 app = FastAPI()
 limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # --- CORS Middleware ---
 # Load allowed origins from environment, fallback to secure defaults
@@ -55,6 +63,7 @@ app.add_middleware(
 PAYTRUST_API_KEY = os.getenv("PAYTRUST_API_KEY")
 PAYTRUST_PROJECT_ID = os.getenv("PAYTRUST_PROJECT_ID")  # Your PayTrust Project ID
 PAYTRUST_API_URL = os.getenv("PAYTRUST_API_URL", "https://engine-sandbox.paytrust.io/api/v1")  # Use production URL when ready
+PAYTRUST_SIGNING_KEY = os.getenv("PAYTRUST_SIGNING_KEY")  # For webhook signature verification
 
 # Price ID to Credits Mapping (configure based on your pricing tiers)
 PRICE_ID_TO_CREDITS = {
@@ -67,91 +76,113 @@ db = None
 firebase_init_error = None
 
 try:
-    print("=== Starting Firebase Initialization ===")
-    
+    logger.info("Starting Firebase Initialization")
+
     firebase_secret_base64 = os.getenv('FIREBASE_SERVICE_ACCOUNT_BASE64')
     if not firebase_secret_base64:
         raise ValueError("FIREBASE_SERVICE_ACCOUNT_BASE64 environment variable not found.")
-    
-    print(f"✓ Environment variable found (length: {len(firebase_secret_base64)})")
-    
+
+    logger.debug(f"Environment variable found (length: {len(firebase_secret_base64)})")
+
     try:
         decoded_secret = base64.b64decode(firebase_secret_base64).decode('utf-8')
-        print("✓ Base64 decoding successful")
+        logger.debug("Base64 decoding successful")
     except Exception as decode_error:
         raise ValueError(f"Failed to decode base64: {decode_error}")
-    
+
     try:
         service_account_info = json.loads(decoded_secret)
-        print(f"✓ JSON parsing successful (Project: {service_account_info.get('project_id', 'UNKNOWN')})")
+        logger.info(f"Firebase project: {service_account_info.get('project_id', 'UNKNOWN')}")
     except Exception as json_error:
         raise ValueError(f"Failed to parse JSON: {json_error}")
-    
+
     # Make storage bucket optional
     bucket_name = os.getenv('FIREBASE_STORAGE_BUCKET')
     if bucket_name:
-        print(f"✓ Storage bucket: {bucket_name}")
+        logger.info(f"Storage bucket: {bucket_name}")
     else:
-        print("⚠ Storage bucket not configured (optional)")
-    
+        logger.warning("Storage bucket not configured (optional)")
+
     if not firebase_admin._apps:
         cred = credentials.Certificate(service_account_info)
         # Initialize with or without storage bucket
         init_config = {'storageBucket': bucket_name} if bucket_name else {}
         firebase_admin.initialize_app(cred, init_config)
-        print("✓ Firebase Admin SDK initialized")
-    
+        logger.info("Firebase Admin SDK initialized")
+
     db = firestore.client()
-    print("✓ Firestore client ready")
-    print("=== Firebase Initialization Complete ===")
-    
+    logger.info("Firebase initialization complete - Firestore client ready")
+
 except Exception as e:
     firebase_init_error = str(e)
-    print(f"❌ CRITICAL ERROR during Firebase init: {e}")
-    print(f"Error type: {type(e).__name__}")
-    import traceback
-    traceback.print_exc()
+    logger.critical(f"Firebase initialization failed: {e}", exc_info=True)
 
-# --- Pydantic Models ---
+# --- Pydantic Models with Validation ---
 class VideoRequest(BaseModel):
-    user_id: str
-    model_id: str
+    user_id: str = Field(..., min_length=1, max_length=128)
+    model_id: str = Field(..., min_length=1, max_length=64)
     params: Dict[str, Any]
 
+    @validator('user_id')
+    def validate_user_id(cls, v):
+        if not v or not v.strip():
+            raise ValueError('User ID cannot be empty')
+        return v.strip()
+
 class PaymentRequest(BaseModel):
-    userId: str
-    customAmount: int | None = None
+    userId: str = Field(..., min_length=1, max_length=128)
+    customAmount: int = Field(..., ge=1, le=1000, description="Amount in EUR (1-1000)")
+
+    @validator('customAmount')
+    def validate_amount(cls, v):
+        if v is None:
+            raise ValueError('Payment amount is required')
+        if v < 1:
+            raise ValueError('Minimum payment is €1')
+        if v > 1000:
+            raise ValueError('Maximum payment is €1,000')
+        return v
 
 class SubscriptionRequest(BaseModel):
-    userId: str
-    priceId: str
+    userId: str = Field(..., min_length=1, max_length=128)
+    priceId: str = Field(..., min_length=1, max_length=64)
 
 class PortalRequest(BaseModel):
-    userId: str
+    userId: str = Field(..., min_length=1, max_length=128)
 
 class AdminUserCreateRequest(BaseModel):
-    email: str
-    password: str
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @validator('password')
+    def validate_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Za-z]', v):
+            raise ValueError('Password must contain at least one letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one number')
+        return v
 
 class AdminUserUpdateRequest(BaseModel):
-    name: str | None = None
-    email: str | None = None
+    name: str | None = Field(None, max_length=100)
+    email: EmailStr | None = None
 
 class AdminCreditRequest(BaseModel):
-    amount: int
+    amount: int = Field(..., ge=1, le=10000, description="Credits to gift (1-10000)")
 
 class AdminTransactionRequest(BaseModel):
-    date: str
-    amount: int
-    type: str
-    status: str
+    date: str = Field(..., pattern=r'^\d{2}/\d{2}/\d{4}$', description="Date in DD/MM/YYYY format")
+    amount: int = Field(..., ge=0, le=100000)
+    type: str = Field(..., min_length=1, max_length=50)
+    status: str = Field(..., min_length=1, max_length=20)
 
 class AdminBillingUpdateRequest(BaseModel):
-    nameOnCard: str
-    address: str
-    city: str
-    state: str
-    validTill: str
+    nameOnCard: str = Field(..., min_length=1, max_length=100)
+    address: str = Field(..., min_length=1, max_length=200)
+    city: str = Field(..., min_length=1, max_length=100)
+    state: str = Field(..., min_length=1, max_length=100)
+    validTill: str = Field(..., pattern=r'^\d{2}/\d{2}$', description="Expiry in MM/YY format")
 
 # --- Model Mapping ---
 REPLICATE_MODELS = {
@@ -193,7 +224,16 @@ admin_dependency = Depends(check_is_admin)
 
 @app.get("/health")
 async def health_check():
-    """Check if backend services are initialized properly"""
+    """Public health check for load balancers and monitoring"""
+    return {
+        "status": "healthy" if db else "unhealthy",
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/admin/health-detailed", dependencies=[admin_dependency])
+@limiter.limit("10/minute")
+async def health_check_detailed(request: Request):
+    """Detailed health check for administrators only"""
     return {
         "status": "healthy" if db else "unhealthy",
         "database": "initialized" if db else "not initialized",
@@ -202,35 +242,34 @@ async def health_check():
             "has_firebase_secret": bool(os.getenv('FIREBASE_SERVICE_ACCOUNT_BASE64')),
             "has_storage_bucket": bool(os.getenv('FIREBASE_STORAGE_BUCKET')),
             "has_paytrust_key": bool(os.getenv('PAYTRUST_API_KEY')),
+            "has_signing_key": bool(os.getenv('PAYTRUST_SIGNING_KEY')),
             "has_replicate_token": bool(os.getenv('REPLICATE_API_TOKEN')),
-        }
+            "env_mode": os.getenv('ENV', 'development')
+        },
+        "timestamp": datetime.now().isoformat()
     }
 
 @app.post("/create-payment")
-async def create_payment(request: PaymentRequest):
+@limiter.limit("5/minute")
+async def create_payment(request: Request, payment_request: PaymentRequest):
     """Create a one-time payment for credits using PayTrust"""
-    if not db: 
+    if not db:
         raise HTTPException(status_code=500, detail="Database not initialized.")
-    
-    print(f"=== Create Payment Request for user {request.userId} ===")
-    
-    user_ref = db.collection('users').document(request.userId)
+
+    logger.info(f"Create Payment Request for user {payment_request.userId}")
+
+    user_ref = db.collection('users').document(payment_request.userId)
     user_doc = user_ref.get()
-    if not user_doc.exists: 
+    if not user_doc.exists:
         raise HTTPException(status_code=404, detail="User not found.")
-    
+
     user_data = user_doc.to_dict()
 
-    if not request.customAmount or request.customAmount <= 0:
-        raise HTTPException(status_code=400, detail="Invalid custom amount.")
-    
-    if request.customAmount > 1000:
-        raise HTTPException(status_code=400, detail="Maximum amount is €1,000.")
-    
-    amount = request.customAmount
-    credits_to_add = request.customAmount * 10
-    
-    print(f"Amount: €{amount}, Credits: {credits_to_add}")
+    # Note: Amount validation handled by Pydantic (1-1000 EUR)
+    amount = payment_request.customAmount
+    credits_to_add = payment_request.customAmount * 10
+
+    logger.info(f"Amount: €{amount}, Credits: {credits_to_add}")
     
     # Create pending payment record in Firestore
     payment_ref = user_ref.collection('payments').document()
@@ -243,8 +282,8 @@ async def create_payment(request: PaymentRequest):
         "type": "Purchase"
     })
     
-    print(f"Payment record created: {payment_id}")
-    
+    logger.info(f"Payment record created: {payment_id}", extra={"user_id": payment_request.userId, "amount": amount})
+
     # Prepare PayTrust payment request - simplified for one-time purchase
     headers = {
         "accept": "application/json",
@@ -262,92 +301,91 @@ async def create_payment(request: PaymentRequest):
         "returnUrl": f"https://ai-video-generator-mvp.netlify.app/payment/success?payment_id={payment_id}",
         "errorUrl": f"https://ai-video-generator-mvp.netlify.app/payment/cancel?payment_id={payment_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
-        "referenceId": f"payment_id={payment_id};user_id={request.userId}",
+        "referenceId": f"payment_id={payment_id};user_id={payment_request.userId}",
         "customer": {
-            "referenceId": request.userId,
+            "referenceId": payment_request.userId,
             "firstName": user_data.get("name", "").split()[0] if user_data.get("name") else "User",
             "lastName": user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer",
             "email": user_data.get("email", "customer@example.com")
         }
     }
-    
-    print(f"PayTrust API URL: {PAYTRUST_API_URL}/payments")
-    print(f"Payload: {json.dumps(payload, indent=2)}")
-    
+
+    logger.debug(f"PayTrust API request for one-time payment {payment_id}")
+
     try:
         response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
-        
-        print(f"PayTrust Response Status: {response.status_code}")
-        print(f"PayTrust Response Body: {response.text}")
-        
+
+        logger.debug(f"PayTrust response status: {response.status_code} for payment {payment_id}")
+
         response.raise_for_status()
         payment_data = response.json()
-        
-        print(f"PayTrust Payment Data: {json.dumps(payment_data, indent=2)}")
-        
+
+        logger.debug(f"PayTrust payment data received for payment {payment_id}")
+
         # PayTrust wraps response in a "result" object
         result = payment_data.get("result", payment_data)
-        
+
         # Update payment record with PayTrust payment ID
         payment_ref.update({
             "paytrustPaymentId": result.get("id"),
             "paytrustTransactionId": result.get("transactionId")
         })
-        
+
         # Get redirect URL from result object
         redirect_url = result.get("redirectUrl") or result.get("redirect_url") or result.get("paymentUrl")
-        
+
         if not redirect_url:
-            print(f"ERROR: No redirect URL in response. Full response: {payment_data}")
+            logger.error(f"No redirect URL in PayTrust response for payment {payment_id}")
             raise HTTPException(status_code=500, detail=f"PayTrust did not return a payment URL. Response: {payment_data}")
-        
-        print(f"✓ Payment URL obtained: {redirect_url}")
+
+        logger.info(f"Payment URL obtained for payment {payment_id}")
         return {"paymentUrl": redirect_url}
-        
+
     except requests.exceptions.HTTPError as e:
         error_detail = f"PayTrust API Error ({e.response.status_code}): {e.response.text}"
-        print(error_detail)
+        logger.error(error_detail, extra={"payment_id": payment_id})
         raise HTTPException(status_code=500, detail=error_detail)
     except requests.exceptions.RequestException as e:
         error_detail = f"Request failed: {str(e)}"
-        print(error_detail)
+        logger.error(error_detail, extra={"payment_id": payment_id})
         raise HTTPException(status_code=500, detail=error_detail)
     except Exception as e:
         error_detail = f"Unexpected error: {str(e)}"
-        print(error_detail)
+        logger.error(error_detail, extra={"payment_id": payment_id})
         raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/create-subscription")
-async def create_subscription(request: SubscriptionRequest):
+@limiter.limit("3/minute")
+async def create_subscription(request: Request, sub_request: SubscriptionRequest):
     """Create a recurring subscription using PayTrust"""
-    if not db: 
+    if not db:
         raise HTTPException(status_code=500, detail="Database not initialized.")
-    
-    print(f"=== Create Subscription Request for user {request.userId} ===")
-    
-    user_ref = db.collection('users').document(request.userId)
+
+    logger.info(f"Create Subscription Request for user {sub_request.userId}")
+
+    user_ref = db.collection('users').document(sub_request.userId)
     user_doc = user_ref.get()
-    if not user_doc.exists: 
+    if not user_doc.exists:
         raise HTTPException(status_code=404, detail="User not found.")
-    
+
     user_data = user_doc.to_dict()
-    
+
     # Get subscription details from price ID
-    subscription_info = PRICE_ID_TO_CREDITS.get(request.priceId)
+    subscription_info = PRICE_ID_TO_CREDITS.get(sub_request.priceId)
     if not subscription_info:
         raise HTTPException(status_code=400, detail="Invalid price ID.")
-    
+
     amount = 22 if subscription_info["planName"] == "Creator" else 49
     credits_per_month = subscription_info["credits"]
     plan_name = subscription_info["planName"]
-    
-    print(f"Plan: {plan_name}, Amount: ${amount}, Credits/month: {credits_per_month}")
-    
+
+    logger.info(f"Plan: {plan_name}, Amount: ${amount}, Credits/month: {credits_per_month}")
+
     # Create subscription record in Firestore
     subscription_ref = user_ref.collection('subscriptions').document()
     subscription_id = subscription_ref.id
     subscription_ref.set({
-        "priceId": request.priceId,
+        "priceId": sub_request.priceId,
         "planName": plan_name,
         "amount": amount,
         "creditsPerMonth": credits_per_month,
@@ -355,8 +393,8 @@ async def create_subscription(request: SubscriptionRequest):
         "status": "pending"
     })
     
-    print(f"Subscription record created: {subscription_id}")
-    
+    logger.info(f"Subscription record created: {subscription_id}", extra={"user_id": sub_request.userId, "plan": plan_name})
+
     # Prepare PayTrust recurring payment request
     headers = {
         "accept": "application/json",
@@ -384,63 +422,62 @@ async def create_subscription(request: SubscriptionRequest):
             "amount": amount,
             "startTime": next_billing
         },
-        "referenceId": f"subscription_id={subscription_id};user_id={request.userId};price_id={request.priceId}",
+        "referenceId": f"subscription_id={subscription_id};user_id={sub_request.userId};price_id={sub_request.priceId}",
         "customer": {
-            "referenceId": request.userId,
+            "referenceId": sub_request.userId,
             "firstName": user_data.get("name", "").split()[0] if user_data.get("name") else "User",
             "lastName": user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer",
             "email": user_data.get("email", "customer@example.com")
         },
         "paymentMethod": "BASIC_CARD"
     }
-    
-    print(f"PayTrust API URL: {PAYTRUST_API_URL}/payments")
-    print(f"Payload: {json.dumps(payload, indent=2)}")
-    
+
+    logger.debug(f"PayTrust API request for subscription {subscription_id}")
+
     try:
         response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
-        
-        print(f"PayTrust Response Status: {response.status_code}")
-        print(f"PayTrust Response Body: {response.text}")
-        
+
+        logger.debug(f"PayTrust response status: {response.status_code} for subscription {subscription_id}")
+
         response.raise_for_status()
         payment_data = response.json()
-        
-        print(f"PayTrust Payment Data: {json.dumps(payment_data, indent=2)}")
-        
+
+        logger.debug(f"PayTrust payment data received for subscription {subscription_id}")
+
         # PayTrust wraps response in a "result" object
         result = payment_data.get("result", payment_data)
-        
+
         # Update subscription record with PayTrust IDs
         subscription_ref.update({
             "paytrustPaymentId": result.get("id"),
             "paytrustTransactionId": result.get("transactionId")
         })
-        
+
         # Get redirect URL from result object
         redirect_url = result.get("redirectUrl") or result.get("redirect_url") or result.get("paymentUrl")
-        
+
         if not redirect_url:
-            print(f"ERROR: No redirect URL in response. Full response: {payment_data}")
+            logger.error(f"No redirect URL in PayTrust response for subscription {subscription_id}")
             raise HTTPException(status_code=500, detail=f"PayTrust did not return a payment URL. Response: {payment_data}")
-        
-        print(f"✓ Payment URL obtained: {redirect_url}")
+
+        logger.info(f"Subscription payment URL obtained for subscription {subscription_id}")
         return {"paymentUrl": redirect_url}
-        
+
     except requests.exceptions.HTTPError as e:
         error_detail = f"PayTrust API Error ({e.response.status_code}): {e.response.text}"
-        print(error_detail)
+        logger.error(error_detail, extra={"subscription_id": subscription_id})
         raise HTTPException(status_code=500, detail=error_detail)
     except requests.exceptions.RequestException as e:
         error_detail = f"Request failed: {str(e)}"
-        print(error_detail)
+        logger.error(error_detail, extra={"subscription_id": subscription_id})
         raise HTTPException(status_code=500, detail=error_detail)
     except Exception as e:
         error_detail = f"Unexpected error: {str(e)}"
-        print(error_detail)
+        logger.error(error_detail, extra={"subscription_id": subscription_id})
         raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/paytrust-webhook")
+@limiter.limit("100/minute")
 async def paytrust_webhook(request: Request):
     """
     Handle webhook notifications from PayTrust
@@ -449,16 +486,43 @@ async def paytrust_webhook(request: Request):
     - Payment failed
     - Subscription payment (recurring)
     - Refunds
+
+    Security: Verifies webhook signature using HMAC-SHA256
     """
     try:
         body = await request.body()
+
+        # --- Webhook Signature Verification ---
+        signature = request.headers.get("X-PayTrust-Signature") or request.headers.get("X-Signature")
+
+        if PAYTRUST_SIGNING_KEY:
+            if signature:
+                expected_signature = hmac.new(
+                    PAYTRUST_SIGNING_KEY.encode('utf-8'),
+                    body,
+                    hashlib.sha256
+                ).hexdigest()
+
+                if not hmac.compare_digest(signature, expected_signature):
+                    logger.warning(f"Invalid webhook signature received from {request.client.host if request.client else 'unknown'}")
+                    raise HTTPException(status_code=401, detail="Invalid webhook signature")
+            elif os.getenv('ENV') == 'production':
+                logger.warning(f"Webhook received without signature in production from {request.client.host if request.client else 'unknown'}")
+                raise HTTPException(status_code=401, detail="Missing webhook signature")
+
         payload = json.loads(body)
-        
-        print("=" * 80)
-        print(f"WEBHOOK RECEIVED: {datetime.now()}")
-        print(f"Payload: {json.dumps(payload, indent=2)}")
-        print("=" * 80)
-        
+
+        # --- Idempotency Check ---
+        webhook_id = payload.get("id") or payload.get("result", {}).get("id")
+        if webhook_id and db:
+            webhook_ref = db.collection('processed_webhooks').document(str(webhook_id))
+            if webhook_ref.get().exists:
+                logger.info(f"Webhook {webhook_id} already processed, skipping")
+                return {"status": "already_processed", "webhook_id": webhook_id}
+
+        logger.info(f"WEBHOOK RECEIVED: {datetime.now()}")
+        logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
+
         # Extract event data from PayTrust response
         # PayTrust may send data in different structures, handle both
         if "result" in payload:
@@ -473,10 +537,11 @@ async def paytrust_webhook(request: Request):
         amount = event_data.get("amount")
         payment_type = event_data.get("paymentType")
         
-        print(f"State: {state}")
-        print(f"Transaction ID: {transaction_id}")
-        print(f"Reference ID: {reference_id}")
-        print(f"Amount: {amount}")
+        logger.info(f"Webhook received - State: {state}", extra={
+            "transaction_id": transaction_id,
+            "reference_id": reference_id,
+            "amount": amount
+        })
         
         # Parse referenceId to extract metadata
         metadata = {}
@@ -491,10 +556,10 @@ async def paytrust_webhook(request: Request):
         subscription_doc_id = metadata.get("subscription_id")
         price_id = metadata.get("price_id")
         
-        print(f"Extracted Metadata: {metadata}")
-        
+        logger.debug(f"Extracted webhook metadata", extra={"metadata": metadata})
+
         if not user_id:
-            print("⚠️ WARNING: No user_id in webhook payload")
+            logger.warning("No user_id in webhook payload")
             return {"status": "received", "warning": "No user_id found"}
         
         user_ref = db.collection('users').document(user_id)
@@ -502,18 +567,18 @@ async def paytrust_webhook(request: Request):
         # Handle different payment states
         # PayTrust uses: COMPLETED (success), FAILED, DECLINED, PENDING, CHECKOUT
         if state == "COMPLETED" or state == "SUCCESS":
-            print(f"✓ Processing COMPLETED/SUCCESS state for user {user_id}")
-            
+            logger.info(f"Processing successful payment for user {user_id}")
+
             # Check if this is a subscription payment or one-time payment
             if subscription_doc_id or price_id:
-                print(f"📅 Subscription payment detected")
-                
+                logger.info(f"Subscription payment detected for user {user_id}")
+
                 # This is a subscription payment (initial or recurring)
                 subscription_info = PRICE_ID_TO_CREDITS.get(price_id) if price_id else None
                 credits_to_add = subscription_info["credits"] if subscription_info else 250  # Default to Creator plan
                 plan_name = subscription_info["planName"] if subscription_info else "Creator"
-                
-                print(f"Adding {credits_to_add} subscription credits for {plan_name} plan")
+
+                logger.info(f"Adding {credits_to_add} subscription credits for {plan_name} plan", extra={"user_id": user_id})
                 
                 # Update user credits and subscription status
                 user_ref.update({
@@ -532,9 +597,9 @@ async def paytrust_webhook(request: Request):
                             "lastPaymentDate": firestore.SERVER_TIMESTAMP,
                             "paytrustTransactionId": transaction_id
                         })
-                        print(f"✓ Updated subscription document: {subscription_doc_id}")
+                        logger.info(f"Updated subscription document: {subscription_doc_id}")
                     else:
-                        print(f"⚠️ Subscription document not found: {subscription_doc_id}")
+                        logger.warning(f"Subscription document not found: {subscription_doc_id}")
                 
                 # Create payment record for this subscription payment
                 user_ref.collection('payments').add({
@@ -548,10 +613,10 @@ async def paytrust_webhook(request: Request):
                     "paidAt": firestore.SERVER_TIMESTAMP
                 })
                 
-                print(f"✓ Subscription payment successful for user {user_id}. Added {credits_to_add} credits.")
-            
+                logger.info(f"Subscription payment successful for user {user_id}. Added {credits_to_add} credits.")
+
             elif payment_doc_id:
-                print(f"💳 One-time payment detected: {payment_doc_id}")
+                logger.info(f"One-time payment detected: {payment_doc_id}")
                 
                 # This is a one-time payment
                 payment_ref = user_ref.collection('payments').document(payment_doc_id)
@@ -560,9 +625,9 @@ async def paytrust_webhook(request: Request):
                 if payment_doc.exists:
                     payment_data = payment_doc.to_dict()
                     credits_to_add = payment_data.get("creditsPurchased", 0)
-                    
-                    print(f"Payment status BEFORE update: {payment_data.get('status')}")
-                    print(f"Adding {credits_to_add} credits from one-time purchase")
+
+                    logger.debug(f"Payment status before update: {payment_data.get('status')}")
+                    logger.info(f"Adding {credits_to_add} credits from one-time purchase", extra={"user_id": user_id, "payment_id": payment_doc_id})
                     
                     # ✅ CRITICAL: Update payment status from pending to paid
                     payment_ref.update({
@@ -573,7 +638,7 @@ async def paytrust_webhook(request: Request):
                     
                     # Verify status was updated
                     updated_payment = payment_ref.get().to_dict()
-                    print(f"Payment status AFTER update: {updated_payment.get('status')}")
+                    logger.debug(f"Payment status after update: {updated_payment.get('status')}")
                     
                     # Add credits to user
                     user_ref.update({
@@ -584,17 +649,18 @@ async def paytrust_webhook(request: Request):
                     updated_user = user_ref.get().to_dict()
                     new_credit_balance = updated_user.get("credits", 0)
                     
-                    print(f"✓ One-time payment successful for user {user_id}")
-                    print(f"✓ Payment status updated: pending → paid")
-                    print(f"✓ Added {credits_to_add} credits")
-                    print(f"✓ New credit balance: {new_credit_balance}")
+                    logger.info(f"One-time payment successful for user {user_id}", extra={
+                        "credits_added": credits_to_add,
+                        "new_balance": new_credit_balance,
+                        "payment_id": payment_doc_id
+                    })
                 else:
-                    print(f"❌ ERROR: Payment document {payment_doc_id} not found")
+                    logger.error(f"Payment document not found: {payment_doc_id}")
             else:
-                print(f"⚠️ WARNING: No payment_id or subscription_id found in metadata")
+                logger.warning(f"No payment_id or subscription_id found in metadata for user {user_id}")
         
         elif state == "FAIL" or state == "FAILED" or state == "DECLINED":
-            print(f"❌ Payment FAILED or DECLINED for user {user_id}")
+            logger.warning(f"Payment FAILED or DECLINED for user {user_id}")
             
             # Handle failed payments
             if payment_doc_id:
@@ -605,7 +671,7 @@ async def paytrust_webhook(request: Request):
                         "status": "failed",
                         "failedAt": firestore.SERVER_TIMESTAMP
                     })
-                    print(f"✓ Updated payment status to failed: {payment_doc_id}")
+                    logger.info(f"Updated payment status to failed: {payment_doc_id}")
             
             if subscription_doc_id:
                 sub_ref = user_ref.collection('subscriptions').document(subscription_doc_id)
@@ -615,29 +681,39 @@ async def paytrust_webhook(request: Request):
                         "status": "failed",
                         "failedAt": firestore.SERVER_TIMESTAMP
                     })
-                    print(f"✓ Updated subscription status to failed: {subscription_doc_id}")
-            
-            print(f"Payment failed for user {user_id}")
-        
+                    logger.info(f"Updated subscription status to failed: {subscription_doc_id}")
+
+            logger.info(f"Payment failed for user {user_id}")
+
         elif state == "PENDING" or state == "CHECKOUT":
             # Payment is still processing
-            print(f"⏳ Payment pending/checkout for user {user_id}")
+            logger.info(f"Payment pending/checkout for user {user_id}")
         
         else:
-            print(f"⚠️ Unknown payment state: {state}")
-        
-        print("=" * 80)
+            logger.warning(f"Unknown payment state: {state}")
+
+        # --- Mark webhook as processed for idempotency ---
+        if webhook_id and db:
+            db.collection('processed_webhooks').document(str(webhook_id)).set({
+                "processedAt": firestore.SERVER_TIMESTAMP,
+                "state": state,
+                "userId": user_id
+            })
+
+        logger.info(f"Webhook processed successfully for user {user_id}")
         return {"status": "received"}
-    
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (signature validation failures)
+        raise
     except Exception as e:
-        print(f"❌ WEBHOOK ERROR: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"WEBHOOK ERROR: {e}", exc_info=True)
         # Return 200 even on errors to prevent PayTrust from retrying
         return {"status": "error", "message": str(e)}
 
 @app.get("/payment-status/{payment_id}")
-async def check_payment_status(payment_id: str, user_id: str):
+@limiter.limit("30/minute")
+async def check_payment_status(request: Request, payment_id: str, user_id: str):
     """Allow frontend to check payment status"""
     if not db:
         raise HTTPException(status_code=500, detail="Database not initialized.")
@@ -656,13 +732,14 @@ async def check_payment_status(payment_id: str, user_id: str):
     }
 
 @app.post("/create-customer-portal-session")
-async def create_customer_portal(request: PortalRequest):
+@limiter.limit("5/minute")
+async def create_customer_portal(request: Request, portal_request: PortalRequest):
     """
     Note: PayTrust may not have a built-in customer portal like Stripe.
     You may need to build your own subscription management UI.
     This endpoint is kept for compatibility but may need custom implementation.
     """
-    user_ref = db.collection('users').document(request.userId)
+    user_ref = db.collection('users').document(portal_request.userId)
     user_doc = user_ref.get()
     if not user_doc.exists: 
         raise HTTPException(status_code=404, detail="User not found.")
@@ -671,11 +748,14 @@ async def create_customer_portal(request: PortalRequest):
     return {"portalUrl": "https://ai-video-generator-mvp.netlify.app/account"}
 
 @app.post("/generate-video")
-async def generate_media(request: VideoRequest):
-    if not db: raise HTTPException(status_code=500, detail="Firestore database not initialized.")
-    user_ref = db.collection('users').document(request.user_id)
-    model_string = REPLICATE_MODELS.get(request.model_id)
-    if not model_string: raise HTTPException(status_code=400, detail="Invalid model ID provided.")
+@limiter.limit("10/minute")
+async def generate_media(request: Request, video_request: VideoRequest):
+    if not db:
+        raise HTTPException(status_code=500, detail="Firestore database not initialized.")
+    user_ref = db.collection('users').document(video_request.user_id)
+    model_string = REPLICATE_MODELS.get(video_request.model_id)
+    if not model_string:
+        raise HTTPException(status_code=400, detail="Invalid model ID provided.")
     try:
         user_doc = user_ref.get()
         if not user_doc.exists or user_doc.to_dict().get('credits', 0) <= 0:
@@ -684,8 +764,8 @@ async def generate_media(request: VideoRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to manage credits: {e}")
     try:
-        api_params = request.params.copy()
-        image_param_name = MODEL_IMAGE_PARAMS.get(request.model_id)
+        api_params = video_request.params.copy()
+        image_param_name = MODEL_IMAGE_PARAMS.get(video_request.model_id)
         if image_param_name and image_param_name in api_params:
             image_data = api_params.get(image_param_name)
             if image_data and isinstance(image_data, str) and image_data.startswith("data:image"):
@@ -704,21 +784,25 @@ async def generate_media(request: VideoRequest):
         else:
             raise TypeError("Unexpected model output format.")
     except Exception as e:
-        print(f"Replicate task failed for user {request.user_id}. Refunding credit. Error: {e}")
-        try: user_ref.update({'credits': firestore.Increment(1)})
-        except Exception as refund_e: print(f"CRITICAL: FAILED TO REFUND CREDIT for user {request.user_id}. Error: {refund_e}")
+        logger.error(f"Replicate task failed for user {video_request.user_id}. Refunding credit. Error: {e}")
+        try:
+            user_ref.update({'credits': firestore.Increment(1)})
+        except Exception as refund_e:
+            logger.critical(f"FAILED TO REFUND CREDIT for user {video_request.user_id}. Error: {refund_e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
 
 # ========================
 # === ADMIN ENDPOINTS ===
 # ========================
 @app.get("/admin/stats", dependencies=[admin_dependency])
-async def get_admin_stats():
+@limiter.limit("30/minute")
+async def get_admin_stats(request: Request):
     users_collection = db.collection('users').stream()
     return {"userCount": len(list(users_collection))}
 
 @app.get("/admin/users", dependencies=[admin_dependency])
-async def get_all_users():
+@limiter.limit("30/minute")
+async def get_all_users(request: Request):
     users_list = []
     users_docs = db.collection('users').stream()
     for user in users_docs:
@@ -727,80 +811,106 @@ async def get_all_users():
     return users_list
 
 @app.post("/admin/users", dependencies=[admin_dependency])
-async def create_user_account(request: AdminUserCreateRequest):
+@limiter.limit("10/minute")
+async def create_user_account(request: Request, user_create: AdminUserCreateRequest):
     try:
-        user = auth.create_user(email=request.email, password=request.password)
+        user = auth.create_user(email=user_create.email, password=user_create.password)
         db.collection('users').document(user.uid).set({ "email": user.email, "createdAt": firestore.SERVER_TIMESTAMP, "credits": 10, "activePlan": "Starter" })
         return {"message": "User created successfully", "uid": user.uid}
-    except Exception as e: raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/admin/users/{user_id}", dependencies=[admin_dependency])
-async def get_user_details(user_id: str):
+@limiter.limit("30/minute")
+async def get_user_details(request: Request, user_id: str):
     user_doc = db.collection('users').document(user_id).get()
-    if not user_doc.exists: raise HTTPException(status_code=404, detail="User not found")
+    if not user_doc.exists:
+        raise HTTPException(status_code=404, detail="User not found")
     transactions = []
     trans_docs = db.collection('users').document(user_id).collection('payments').order_by("createdAt", direction=firestore.Query.DESCENDING).stream()
     for doc in trans_docs:
         trans_data = doc.to_dict()
         trans_data["id"] = doc.id
-        if 'createdAt' in trans_data and trans_data['createdAt']: trans_data['createdAt'] = trans_data['createdAt'].strftime('%d/%m/%Y')
+        if 'createdAt' in trans_data and trans_data['createdAt']:
+            trans_data['createdAt'] = trans_data['createdAt'].strftime('%d/%m/%Y')
         transactions.append(trans_data)
     user_profile = user_doc.to_dict()
     user_profile['name'] = user_profile.get('name', user_profile.get('email', ''))
     return {"profile": user_profile, "transactions": transactions}
 
 @app.put("/admin/users/{user_id}", dependencies=[admin_dependency])
-async def update_user_details(user_id: str, request: AdminUserUpdateRequest):
-    auth.update_user(user_id, email=request.email, display_name=request.name)
-    db.collection('users').document(user_id).update({"email": request.email, "name": request.name})
+@limiter.limit("20/minute")
+async def update_user_details(request: Request, user_id: str, user_update: AdminUserUpdateRequest):
+    auth.update_user(user_id, email=user_update.email, display_name=user_update.name)
+    db.collection('users').document(user_id).update({"email": user_update.email, "name": user_update.name})
     return {"message": "User updated successfully"}
 
 @app.put("/admin/users/{user_id}/billing", dependencies=[admin_dependency])
-async def update_billing_info(user_id: str, request: AdminBillingUpdateRequest):
-    db.collection('users').document(user_id).update({"billingInfo": request.dict()})
+@limiter.limit("20/minute")
+async def update_billing_info(request: Request, user_id: str, billing_update: AdminBillingUpdateRequest):
+    db.collection('users').document(user_id).update({"billingInfo": billing_update.dict()})
     return {"message": "Billing information updated successfully."}
 
 @app.post("/admin/users/{user_id}/gift-credits", dependencies=[admin_dependency])
-async def gift_user_credits(user_id: str, request: AdminCreditRequest):
-    db.collection('users').document(user_id).update({"credits": firestore.Increment(request.amount)})
-    return {"message": f"{request.amount} credits gifted successfully"}
+@limiter.limit("10/minute")
+async def gift_user_credits(request: Request, user_id: str, credit_request: AdminCreditRequest):
+    db.collection('users').document(user_id).update({"credits": firestore.Increment(credit_request.amount)})
+    return {"message": f"{credit_request.amount} credits gifted successfully"}
 
 @app.post("/admin/transactions/{user_id}", dependencies=[admin_dependency])
-async def add_transaction(user_id: str, request: AdminTransactionRequest):
-    trans_date = datetime.strptime(request.date, '%d/%m/%Y')
-    db.collection('users').document(user_id).collection('payments').add({ "createdAt": trans_date, "amount": request.amount, "type": request.type, "status": request.status })
+@limiter.limit("20/minute")
+async def add_transaction(request: Request, user_id: str, trans_request: AdminTransactionRequest):
+    trans_date = datetime.strptime(trans_request.date, '%d/%m/%Y')
+    db.collection('users').document(user_id).collection('payments').add({
+        "createdAt": trans_date,
+        "amount": trans_request.amount,
+        "type": trans_request.type,
+        "status": trans_request.status
+    })
     return {"message": "Transaction added successfully"}
 
 @app.put("/admin/transactions/{user_id}/{trans_id}", dependencies=[admin_dependency])
-async def update_transaction(user_id: str, trans_id: str, request: AdminTransactionRequest):
+@limiter.limit("20/minute")
+async def update_transaction(request: Request, user_id: str, trans_id: str, trans_request: AdminTransactionRequest):
     trans_ref = db.collection('users').document(user_id).collection('payments').document(trans_id)
-    trans_date = datetime.strptime(request.date, '%d/%m/%Y')
-    trans_ref.update({ "createdAt": trans_date, "amount": request.amount, "type": request.type, "status": request.status })
+    trans_date = datetime.strptime(trans_request.date, '%d/%m/%Y')
+    trans_ref.update({
+        "createdAt": trans_date,
+        "amount": trans_request.amount,
+        "type": trans_request.type,
+        "status": trans_request.status
+    })
     return {"message": "Transaction updated successfully"}
 
 @app.delete("/admin/transactions/{user_id}/{trans_id}", dependencies=[admin_dependency])
-async def delete_transaction(user_id: str, trans_id: str):
+@limiter.limit("10/minute")
+async def delete_transaction(request: Request, user_id: str, trans_id: str):
     db.collection('users').document(user_id).collection('payments').document(trans_id).delete()
     return {"message": "Transaction deleted successfully"}
 
 @app.post("/admin/users/{user_id}/reset-password", dependencies=[admin_dependency])
-async def reset_user_password(user_id: str, request: dict):
+@limiter.limit("5/minute")
+async def reset_user_password(request: Request, user_id: str, password_data: dict):
     """Reset a user's password (admin only)"""
-    new_password = request.get("newPassword")
-    
-    if not new_password or len(new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    
+    new_password = password_data.get("newPassword")
+
+    if not new_password or len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
     try:
         # Update password in Firebase Auth
         auth.update_user(user_id, password=new_password)
+        logger.info(f"Password reset for user {user_id}")
         return {"message": "Password reset successfully"}
     except Exception as e:
+        logger.error(f"Failed to reset password for user {user_id}: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to reset password: {str(e)}")
 
 # --- Main execution block ---
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    if not os.getenv("REPLICATE_API_TOKEN"): print("CRITICAL ERROR: REPLICATE_API_TOKEN not set.")
-    else: uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    if not os.getenv("REPLICATE_API_TOKEN"):
+        logger.critical("REPLICATE_API_TOKEN not set - application cannot start")
+    else:
+        uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

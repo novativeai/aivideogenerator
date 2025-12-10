@@ -906,6 +906,338 @@ async def reset_user_password(request: Request, user_id: str, password_data: dic
         logger.error(f"Failed to reset password for user {user_id}: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to reset password: {str(e)}")
 
+# --- Seller Management Endpoints ---
+
+class SellerSuspendRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+
+@app.get("/admin/sellers", dependencies=[admin_dependency])
+@limiter.limit("30/minute")
+async def get_all_sellers(request: Request):
+    """Get all sellers with their stats"""
+    try:
+        # Query users who are sellers (isSeller = true)
+        sellers_query = db.collection('users').where('isSeller', '==', True).stream()
+
+        sellers = []
+        verified_count = 0
+        unverified_count = 0
+        suspended_count = 0
+
+        for doc in sellers_query:
+            user_data = doc.to_dict()
+            seller_profile = user_data.get('sellerProfile', {})
+
+            # Determine seller status
+            status = seller_profile.get('status', 'unverified')
+            if status == 'verified':
+                verified_count += 1
+            elif status == 'suspended':
+                suspended_count += 1
+            else:
+                unverified_count += 1
+
+            sellers.append({
+                'userId': doc.id,
+                'email': user_data.get('email', ''),
+                'displayName': user_data.get('displayName', user_data.get('name', '')),
+                'status': status,
+                'paypalEmail': seller_profile.get('paypalEmail'),
+                'verificationDate': seller_profile.get('verificationDate'),
+                'suspensionReason': seller_profile.get('suspensionReason'),
+                'suspendedAt': seller_profile.get('suspendedAt')
+            })
+
+        return {
+            'sellers': sellers,
+            'count': len(sellers),
+            'verified': verified_count,
+            'unverified': unverified_count,
+            'suspended': suspended_count
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch sellers: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch sellers: {str(e)}")
+
+@app.post("/admin/seller/{user_id}/verify", dependencies=[admin_dependency])
+@limiter.limit("10/minute")
+async def verify_seller(request: Request, user_id: str):
+    """Verify a seller account"""
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_data = user_doc.to_dict()
+        if not user_data.get('isSeller'):
+            raise HTTPException(status_code=400, detail="User is not a seller")
+
+        # Update seller profile status
+        user_ref.update({
+            'sellerProfile.status': 'verified',
+            'sellerProfile.verificationDate': firestore.SERVER_TIMESTAMP,
+            'sellerProfile.suspensionReason': firestore.DELETE_FIELD,
+            'sellerProfile.suspendedAt': firestore.DELETE_FIELD
+        })
+
+        logger.info(f"Seller {user_id} verified by admin")
+        return {"message": "Seller verified successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to verify seller {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to verify seller: {str(e)}")
+
+@app.post("/admin/seller/{user_id}/suspend", dependencies=[admin_dependency])
+@limiter.limit("10/minute")
+async def suspend_seller(request: Request, user_id: str, suspend_data: SellerSuspendRequest):
+    """Suspend a seller account with reason"""
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_data = user_doc.to_dict()
+        if not user_data.get('isSeller'):
+            raise HTTPException(status_code=400, detail="User is not a seller")
+
+        # Update seller profile status
+        user_ref.update({
+            'sellerProfile.status': 'suspended',
+            'sellerProfile.suspensionReason': suspend_data.reason,
+            'sellerProfile.suspendedAt': firestore.SERVER_TIMESTAMP
+        })
+
+        logger.info(f"Seller {user_id} suspended by admin. Reason: {suspend_data.reason}")
+        return {"message": "Seller suspended successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to suspend seller {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to suspend seller: {str(e)}")
+
+@app.post("/admin/seller/{user_id}/unsuspend", dependencies=[admin_dependency])
+@limiter.limit("10/minute")
+async def unsuspend_seller(request: Request, user_id: str):
+    """Unsuspend a seller account (restore to verified status)"""
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_data = user_doc.to_dict()
+        if not user_data.get('isSeller'):
+            raise HTTPException(status_code=400, detail="User is not a seller")
+
+        seller_profile = user_data.get('sellerProfile', {})
+        if seller_profile.get('status') != 'suspended':
+            raise HTTPException(status_code=400, detail="Seller is not suspended")
+
+        # Restore to verified status
+        user_ref.update({
+            'sellerProfile.status': 'verified',
+            'sellerProfile.suspensionReason': firestore.DELETE_FIELD,
+            'sellerProfile.suspendedAt': firestore.DELETE_FIELD
+        })
+
+        logger.info(f"Seller {user_id} unsuspended by admin")
+        return {"message": "Seller unsuspended successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to unsuspend seller {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to unsuspend seller: {str(e)}")
+
+# --- Payout Management Endpoints ---
+
+@app.get("/admin/payouts/queue", dependencies=[admin_dependency])
+@limiter.limit("30/minute")
+async def get_pending_payouts(request: Request):
+    """Get all pending payout requests"""
+    try:
+        payouts = []
+
+        # Query all users who are sellers
+        sellers_query = db.collection('users').where('isSeller', '==', True).stream()
+
+        for seller_doc in sellers_query:
+            user_id = seller_doc.id
+            # Get pending withdrawal requests for this seller
+            withdrawals = db.collection('users').document(user_id).collection('withdrawalRequests').where('status', '==', 'pending').stream()
+
+            for withdrawal_doc in withdrawals:
+                withdrawal_data = withdrawal_doc.to_dict()
+                payouts.append({
+                    'id': withdrawal_doc.id,
+                    'userId': user_id,
+                    'amount': withdrawal_data.get('amount', 0),
+                    'paypalEmail': withdrawal_data.get('paypalEmail', ''),
+                    'status': withdrawal_data.get('status', 'pending'),
+                    'createdAt': withdrawal_data.get('createdAt'),
+                    'docPath': f"users/{user_id}/withdrawalRequests/{withdrawal_doc.id}"
+                })
+
+        # Sort by creation date (newest first)
+        payouts.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
+
+        return {'payouts': payouts}
+    except Exception as e:
+        logger.error(f"Failed to fetch pending payouts: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch pending payouts: {str(e)}")
+
+@app.get("/admin/payouts/history", dependencies=[admin_dependency])
+@limiter.limit("30/minute")
+async def get_payout_history(request: Request):
+    """Get payout history (approved, rejected, completed)"""
+    try:
+        payouts = []
+
+        # Query all users who are sellers
+        sellers_query = db.collection('users').where('isSeller', '==', True).stream()
+
+        for seller_doc in sellers_query:
+            user_id = seller_doc.id
+            # Get non-pending withdrawal requests for this seller
+            withdrawals = db.collection('users').document(user_id).collection('withdrawalRequests').where('status', 'in', ['approved', 'rejected', 'completed']).stream()
+
+            for withdrawal_doc in withdrawals:
+                withdrawal_data = withdrawal_doc.to_dict()
+                payouts.append({
+                    'id': withdrawal_doc.id,
+                    'userId': user_id,
+                    'amount': withdrawal_data.get('amount', 0),
+                    'paypalEmail': withdrawal_data.get('paypalEmail', ''),
+                    'status': withdrawal_data.get('status'),
+                    'createdAt': withdrawal_data.get('createdAt'),
+                    'approvedAt': withdrawal_data.get('approvedAt'),
+                    'rejectedAt': withdrawal_data.get('rejectedAt'),
+                    'completedAt': withdrawal_data.get('completedAt'),
+                    'docPath': f"users/{user_id}/withdrawalRequests/{withdrawal_doc.id}"
+                })
+
+        # Sort by most recent activity
+        payouts.sort(key=lambda x: x.get('approvedAt') or x.get('rejectedAt') or x.get('completedAt') or x.get('createdAt', ''), reverse=True)
+
+        return {'payouts': payouts}
+    except Exception as e:
+        logger.error(f"Failed to fetch payout history: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch payout history: {str(e)}")
+
+class PayoutActionRequest(BaseModel):
+    user_id: str
+
+@app.post("/admin/payouts/{payout_id}/approve", dependencies=[admin_dependency])
+@limiter.limit("10/minute")
+async def approve_payout(request: Request, payout_id: str, action_data: PayoutActionRequest):
+    """Approve a payout request"""
+    try:
+        user_id = action_data.user_id
+        payout_ref = db.collection('users').document(user_id).collection('withdrawalRequests').document(payout_id)
+        payout_doc = payout_ref.get()
+
+        if not payout_doc.exists:
+            raise HTTPException(status_code=404, detail="Payout request not found")
+
+        payout_data = payout_doc.to_dict()
+        if payout_data.get('status') != 'pending':
+            raise HTTPException(status_code=400, detail="Payout is not in pending status")
+
+        # Update payout status to approved
+        payout_ref.update({
+            'status': 'approved',
+            'approvedAt': firestore.SERVER_TIMESTAMP
+        })
+
+        logger.info(f"Payout {payout_id} approved for user {user_id}")
+        return {"message": "Payout approved successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to approve payout {payout_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to approve payout: {str(e)}")
+
+@app.post("/admin/payouts/{payout_id}/reject", dependencies=[admin_dependency])
+@limiter.limit("10/minute")
+async def reject_payout(request: Request, payout_id: str, action_data: PayoutActionRequest):
+    """Reject a payout request and refund balance"""
+    try:
+        user_id = action_data.user_id
+        payout_ref = db.collection('users').document(user_id).collection('withdrawalRequests').document(payout_id)
+        payout_doc = payout_ref.get()
+
+        if not payout_doc.exists:
+            raise HTTPException(status_code=404, detail="Payout request not found")
+
+        payout_data = payout_doc.to_dict()
+        if payout_data.get('status') != 'pending':
+            raise HTTPException(status_code=400, detail="Payout is not in pending status")
+
+        amount = payout_data.get('amount', 0)
+
+        # Update payout status to rejected
+        payout_ref.update({
+            'status': 'rejected',
+            'rejectedAt': firestore.SERVER_TIMESTAMP
+        })
+
+        # Refund the amount to seller's pending balance
+        user_ref = db.collection('users').document(user_id)
+        user_ref.update({
+            'sellerProfile.pendingBalance': firestore.Increment(amount)
+        })
+
+        logger.info(f"Payout {payout_id} rejected for user {user_id}, amount {amount} refunded")
+        return {"message": "Payout rejected and balance refunded"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to reject payout {payout_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reject payout: {str(e)}")
+
+@app.post("/admin/payouts/{payout_id}/complete", dependencies=[admin_dependency])
+@limiter.limit("10/minute")
+async def complete_payout(request: Request, payout_id: str, action_data: PayoutActionRequest):
+    """Mark a payout as completed (after PayPal transfer is done)"""
+    try:
+        user_id = action_data.user_id
+        payout_ref = db.collection('users').document(user_id).collection('withdrawalRequests').document(payout_id)
+        payout_doc = payout_ref.get()
+
+        if not payout_doc.exists:
+            raise HTTPException(status_code=404, detail="Payout request not found")
+
+        payout_data = payout_doc.to_dict()
+        if payout_data.get('status') != 'approved':
+            raise HTTPException(status_code=400, detail="Payout must be approved before completing")
+
+        amount = payout_data.get('amount', 0)
+
+        # Update payout status to completed
+        payout_ref.update({
+            'status': 'completed',
+            'completedAt': firestore.SERVER_TIMESTAMP
+        })
+
+        # Update seller's withdrawn balance
+        user_ref = db.collection('users').document(user_id)
+        user_ref.update({
+            'sellerProfile.withdrawnBalance': firestore.Increment(amount)
+        })
+
+        logger.info(f"Payout {payout_id} completed for user {user_id}, amount {amount}")
+        return {"message": "Payout marked as completed"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to complete payout {payout_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to complete payout: {str(e)}")
+
 # --- Main execution block ---
 if __name__ == "__main__":
     import uvicorn

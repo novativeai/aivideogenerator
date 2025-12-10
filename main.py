@@ -200,6 +200,79 @@ MODEL_IMAGE_PARAMS = {
     "flux-1.1-pro-ultra": None,
 }
 
+# --- Dynamic Credit Pricing Configuration ---
+MODEL_CREDIT_PRICING = {
+    "kling-2.5": {
+        "base": 10,
+        "modifiers": [
+            {
+                "param": "duration",
+                "values": {"5": 10, "10": 20},
+                "type": "set"
+            }
+        ]
+    },
+    "veo-3.1": {
+        "base": 100,
+        "modifiers": [
+            {
+                "param": "duration",
+                "values": {"4": 50, "6": 75, "8": 100},
+                "type": "set"
+            }
+        ]
+    },
+    "seedance-1-pro": {
+        "base": 10,
+        "modifiers": [
+            {
+                "param": "resolution",
+                "values": {"480p": 10, "720p": 15, "1080p": 20},
+                "type": "set"
+            }
+        ]
+    },
+    "wan-2.2": {
+        "base": 3,
+        "modifiers": [
+            {
+                "param": "resolution",
+                "values": {"480p": 3, "720p": 5},
+                "type": "set"
+            }
+        ]
+    },
+    "flux-1.1-pro-ultra": {
+        "base": 2
+    }
+}
+
+def calculate_credits(model_id: str, params: Dict[str, Any]) -> int:
+    """Calculate credits for a generation based on model and parameters"""
+    pricing = MODEL_CREDIT_PRICING.get(model_id, {})
+    credits = pricing.get("base", 0)
+
+    modifiers = pricing.get("modifiers", [])
+    for modifier in modifiers:
+        param_name = modifier.get("param")
+        param_value = params.get(param_name)
+
+        if param_value is not None:
+            param_value_str = str(param_value)
+            modifier_values = modifier.get("values", {})
+            modifier_value = modifier_values.get(param_value_str)
+
+            if modifier_value is not None:
+                modifier_type = modifier.get("type", "set")
+                if modifier_type == "multiply":
+                    credits *= modifier_value
+                elif modifier_type == "add":
+                    credits += modifier_value
+                elif modifier_type == "set":
+                    credits = modifier_value
+
+    return round(credits)
+
 # --- Security Dependency for Admin Routes ---
 async def check_is_admin(authorization: str = Header(...)):
     if not authorization.startswith("Bearer "):
@@ -756,13 +829,24 @@ async def generate_media(request: Request, video_request: VideoRequest):
     model_string = REPLICATE_MODELS.get(video_request.model_id)
     if not model_string:
         raise HTTPException(status_code=400, detail="Invalid model ID provided.")
+
+    # Calculate credits dynamically based on model and parameters
+    credits_to_deduct = calculate_credits(video_request.model_id, video_request.params)
+
     try:
         user_doc = user_ref.get()
-        if not user_doc.exists or user_doc.to_dict().get('credits', 0) <= 0:
-            raise HTTPException(status_code=403, detail="User not found or has insufficient credits.")
-        user_ref.update({'credits': firestore.Increment(-1)})
+        if not user_doc.exists:
+            raise HTTPException(status_code=403, detail="User not found.")
+        user_credits = user_doc.to_dict().get('credits', 0)
+        if user_credits < credits_to_deduct:
+            raise HTTPException(status_code=403, detail=f"Insufficient credits. Required: {credits_to_deduct}, Available: {user_credits}")
+        # Deduct calculated credits
+        user_ref.update({'credits': firestore.Increment(-credits_to_deduct)})
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to manage credits: {e}")
+
     try:
         api_params = video_request.params.copy()
         image_param_name = MODEL_IMAGE_PARAMS.get(video_request.model_id)
@@ -784,11 +868,11 @@ async def generate_media(request: Request, video_request: VideoRequest):
         else:
             raise TypeError("Unexpected model output format.")
     except Exception as e:
-        logger.error(f"Replicate task failed for user {video_request.user_id}. Refunding credit. Error: {e}")
+        logger.error(f"Replicate task failed for user {video_request.user_id}. Refunding {credits_to_deduct} credits. Error: {e}")
         try:
-            user_ref.update({'credits': firestore.Increment(1)})
+            user_ref.update({'credits': firestore.Increment(credits_to_deduct)})
         except Exception as refund_e:
-            logger.critical(f"FAILED TO REFUND CREDIT for user {video_request.user_id}. Error: {refund_e}")
+            logger.critical(f"FAILED TO REFUND {credits_to_deduct} CREDITS for user {video_request.user_id}. Error: {refund_e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
 
 # ========================

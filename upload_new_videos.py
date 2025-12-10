@@ -1,5 +1,6 @@
 """
-Script to upload 3 new videos to Firebase Storage and create Firestore documents
+Script to upload new videos to Firebase Storage and create Firestore documents
+With automatic video optimization for lightweight, high-quality delivery
 """
 
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
 from dotenv import load_dotenv
+from video_optimizer import VideoOptimizer, OptimizationResult
 
 # Load environment variables
 load_dotenv()
@@ -79,42 +81,85 @@ NEW_VIDEOS = [
 LOCAL_VIDEO_PATH = Path('../video-generator-frontend/public/marketplace/videos')
 
 
-def upload_video_to_storage(local_path, storage_path):
+def upload_video_to_storage(local_path, storage_path, optimize=True):
     """
-    Upload a video file to Firebase Storage
+    Upload a video file to Firebase Storage with optional optimization
 
     Args:
         local_path: Path to local video file
         storage_path: Destination path in Firebase Storage
+        optimize: Whether to optimize video before upload (default: True)
 
     Returns:
-        str: Public URL of uploaded video
+        tuple: (video_url, thumbnail_url, optimization_stats)
     """
     try:
+        video_to_upload = str(local_path)
+        thumbnail_path = None
+        optimization_stats = None
+
+        # Optimize video if requested
+        if optimize:
+            print('  Optimizing video...')
+            optimizer = VideoOptimizer(quality='balanced')
+            result = optimizer.optimize(
+                input_path=str(local_path),
+                generate_thumbnail=True
+            )
+
+            if result.success:
+                video_to_upload = result.output_path
+                thumbnail_path = result.thumbnail_path
+                optimization_stats = {
+                    'original_size_mb': result.original_size / 1024 / 1024,
+                    'optimized_size_mb': result.optimized_size / 1024 / 1024,
+                    'compression_ratio': result.compression_ratio
+                }
+                print(f'  Optimized: {optimization_stats["original_size_mb"]:.2f}MB -> {optimization_stats["optimized_size_mb"]:.2f}MB ({result.compression_ratio:.1f}% reduction)')
+            else:
+                print(f'  Optimization failed: {result.error}')
+                print('  Uploading original file instead...')
+
+        # Upload optimized video
         blob = bucket.blob(storage_path)
-
-        # Set content type
         blob.content_type = 'video/mp4'
-
-        # Upload file
-        blob.upload_from_filename(str(local_path))
-
-        # Make public
+        blob.upload_from_filename(video_to_upload)
         blob.make_public()
+        video_url = blob.public_url
 
-        return blob.public_url
+        # Upload thumbnail if generated
+        thumbnail_url = video_url  # Fallback to video URL
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            thumb_storage_path = storage_path.replace('.mp4', '_thumb.jpg').replace('.MP4', '_thumb.jpg')
+            thumb_blob = bucket.blob(thumb_storage_path)
+            thumb_blob.content_type = 'image/jpeg'
+            thumb_blob.upload_from_filename(thumbnail_path)
+            thumb_blob.make_public()
+            thumbnail_url = thumb_blob.public_url
+            print(f'  Thumbnail uploaded: {thumbnail_url[:60]}...')
+
+            # Clean up temp thumbnail
+            os.remove(thumbnail_path)
+
+        # Clean up temp optimized video
+        if optimize and video_to_upload != str(local_path) and os.path.exists(video_to_upload):
+            os.remove(video_to_upload)
+
+        return video_url, thumbnail_url, optimization_stats
+
     except Exception as e:
         print(f'  Error uploading {local_path}: {str(e)}')
-        return None
+        return None, None, None
 
 
-def create_marketplace_listing(video_data, video_url):
+def create_marketplace_listing(video_data, video_url, thumbnail_url=None):
     """
     Create marketplace listing in Firestore
 
     Args:
         video_data: Video metadata
         video_url: Firebase Storage URL
+        thumbnail_url: Thumbnail URL (optional, defaults to video_url)
 
     Returns:
         dict: Created listing
@@ -153,7 +198,7 @@ def create_marketplace_listing(video_data, video_url):
             'tags': video_data['tags'],
             'hasAudio': video_data['hasAudio'],
             'useCases': video_data['useCases'],
-            'thumbnailUrl': video_url,
+            'thumbnailUrl': thumbnail_url or video_url,
             'status': 'published',
             'createdAt': firestore.SERVER_TIMESTAMP,
             'updatedAt': firestore.SERVER_TIMESTAMP,
@@ -173,13 +218,18 @@ def create_marketplace_listing(video_data, video_url):
 
 
 def main():
-    print('Starting upload of 3 new videos...\n')
+    print('Starting upload of new videos with optimization...\n')
+    print('=' * 60)
+    print('Video optimization enabled: H.264 CRF 23 (visually lossless)')
+    print('Expected compression: 70-85% size reduction')
     print('=' * 60)
 
     success_count = 0
+    total_original_mb = 0
+    total_optimized_mb = 0
 
     for i, video in enumerate(NEW_VIDEOS, 1):
-        print(f'\n[{i}/3] Processing: {video["local_filename"]}')
+        print(f'\n[{i}/{len(NEW_VIDEOS)}] Processing: {video["local_filename"]}')
 
         local_path = LOCAL_VIDEO_PATH / video['local_filename']
 
@@ -194,20 +244,25 @@ def main():
         print(f'  Duration: {video["duration"]}s')
         print(f'  Price: EUR{video["price"]}')
 
-        # Upload to Firebase Storage
-        print('  Uploading to Firebase Storage...')
+        # Upload to Firebase Storage (with optimization)
+        print('  Processing and uploading...')
         storage_path = f'marketplace/videos/{video["local_filename"]}'
-        video_url = upload_video_to_storage(local_path, storage_path)
+        video_url, thumbnail_url, stats = upload_video_to_storage(local_path, storage_path, optimize=True)
 
         if not video_url:
             print('  Failed to upload video')
             continue
 
-        print(f'  Uploaded: {video_url[:80]}...')
+        # Track compression stats
+        if stats:
+            total_original_mb += stats['original_size_mb']
+            total_optimized_mb += stats['optimized_size_mb']
+
+        print(f'  Video URL: {video_url[:60]}...')
 
         # Create Firestore document
         print('  Creating Firestore document...')
-        listing = create_marketplace_listing(video, video_url)
+        listing = create_marketplace_listing(video, video_url, thumbnail_url)
 
         if listing:
             print(f'  Created listing with ID: {listing["id"]}')
@@ -216,7 +271,10 @@ def main():
             print('  Failed to create listing')
 
     print('\n' + '=' * 60)
-    print(f'Completed: {success_count}/3 videos uploaded successfully')
+    print(f'Completed: {success_count}/{len(NEW_VIDEOS)} videos uploaded successfully')
+    if total_original_mb > 0:
+        total_savings = (1 - total_optimized_mb / total_original_mb) * 100
+        print(f'Total size: {total_original_mb:.2f}MB -> {total_optimized_mb:.2f}MB ({total_savings:.1f}% reduction)')
     print('=' * 60)
 
 

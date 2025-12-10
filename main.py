@@ -248,10 +248,36 @@ MODEL_CREDIT_PRICING = {
 }
 
 def calculate_credits(model_id: str, params: Dict[str, Any]) -> int:
-    """Calculate credits for a generation based on model and parameters"""
-    pricing = MODEL_CREDIT_PRICING.get(model_id, {})
-    credits = pricing.get("base", 0)
+    """
+    Calculate credits for a generation based on model and parameters.
 
+    Raises:
+        ValueError: If model_id is invalid or pricing configuration is malformed
+    """
+    # VALIDATION: Check if model exists
+    if not model_id:
+        logger.warning("calculate_credits called with empty model_id")
+        raise ValueError("model_id cannot be empty")
+
+    if model_id not in MODEL_CREDIT_PRICING:
+        logger.warning(f"calculate_credits called with unknown model_id: {model_id}")
+        raise ValueError(f"Unknown model: {model_id}. Valid models: {list(MODEL_CREDIT_PRICING.keys())}")
+
+    pricing = MODEL_CREDIT_PRICING[model_id]
+
+    # VALIDATION: Check base credits exist
+    if "base" not in pricing:
+        logger.error(f"Invalid pricing config for {model_id}: missing 'base' field")
+        raise ValueError(f"Invalid pricing configuration for {model_id}: missing 'base' field")
+
+    credits = pricing["base"]
+
+    # VALIDATION: Ensure credits is a positive number
+    if not isinstance(credits, (int, float)) or credits < 0:
+        logger.error(f"Invalid base credits for {model_id}: {credits}")
+        raise ValueError(f"Invalid base credits for {model_id}: must be non-negative number")
+
+    # Apply modifiers
     modifiers = pricing.get("modifiers", [])
     for modifier in modifiers:
         param_name = modifier.get("param")
@@ -263,6 +289,11 @@ def calculate_credits(model_id: str, params: Dict[str, Any]) -> int:
             modifier_value = modifier_values.get(param_value_str)
 
             if modifier_value is not None:
+                # VALIDATION: Ensure modifier is numeric
+                if not isinstance(modifier_value, (int, float)):
+                    logger.error(f"Invalid modifier value for {model_id}.{param_name}={param_value_str}: {modifier_value}")
+                    raise ValueError(f"Invalid modifier value type")
+
                 modifier_type = modifier.get("type", "set")
                 if modifier_type == "multiply":
                     credits *= modifier_value
@@ -270,8 +301,25 @@ def calculate_credits(model_id: str, params: Dict[str, Any]) -> int:
                     credits += modifier_value
                 elif modifier_type == "set":
                     credits = modifier_value
+                else:
+                    logger.warning(f"Unknown modifier type: {modifier_type} for {model_id}")
+            else:
+                # Unknown parameter value - log warning but continue
+                logger.warning(f"Unknown parameter value for {model_id}.{param_name}={param_value_str}. Using base credits.")
+        else:
+            # Parameter not provided - use base credits or next modifier
+            logger.debug(f"Parameter {param_name} not provided for {model_id}")
 
-    return round(credits)
+    # Final validation: ensure result is valid
+    final_credits = round(credits)
+    if final_credits < 0:
+        logger.error(f"calculate_credits returned negative value: {final_credits} for {model_id}")
+        raise ValueError("Credit calculation resulted in negative credits")
+
+    if final_credits == 0:
+        logger.warning(f"calculate_credits returned 0 credits for {model_id} with params {params}")
+
+    return final_credits
 
 # --- Security Dependency for Admin Routes ---
 async def check_is_admin(authorization: str = Header(...)):
@@ -825,28 +873,95 @@ async def create_customer_portal(request: Request, portal_request: PortalRequest
 async def generate_media(request: Request, video_request: VideoRequest):
     if not db:
         raise HTTPException(status_code=500, detail="Firestore database not initialized.")
+
     user_ref = db.collection('users').document(video_request.user_id)
     model_string = REPLICATE_MODELS.get(video_request.model_id)
     if not model_string:
         raise HTTPException(status_code=400, detail="Invalid model ID provided.")
 
     # Calculate credits dynamically based on model and parameters
-    credits_to_deduct = calculate_credits(video_request.model_id, video_request.params)
+    try:
+        credits_to_deduct = calculate_credits(video_request.model_id, video_request.params)
+    except ValueError as e:
+        logger.error(f"Credit calculation failed for model {video_request.model_id}: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid model configuration: {e}")
+
+    # Generate a unique transaction ID for audit trail
+    transaction_id = db.collection('generation_transactions').document().id
+    transaction_ref = db.collection('generation_transactions').document(transaction_id)
+
+    # --- ATOMIC CREDIT DEDUCTION WITH FIRESTORE TRANSACTION ---
+    @firestore.transactional
+    def deduct_credits_atomically(transaction, user_ref, credits_to_deduct):
+        """
+        Atomically check and deduct credits to prevent race conditions.
+        Returns the user's credits before deduction for verification.
+        """
+        user_snapshot = user_ref.get(transaction=transaction)
+
+        if not user_snapshot.exists:
+            raise ValueError("User not found")
+
+        user_data = user_snapshot.to_dict()
+        current_credits = user_data.get('credits', 0)
+
+        if current_credits < credits_to_deduct:
+            raise ValueError(f"Insufficient credits. Required: {credits_to_deduct}, Available: {current_credits}")
+
+        # Atomically update credits
+        new_credits = current_credits - credits_to_deduct
+        transaction.update(user_ref, {'credits': new_credits})
+
+        return current_credits
 
     try:
-        user_doc = user_ref.get()
-        if not user_doc.exists:
+        # Create pending transaction record BEFORE deduction
+        transaction_ref.set({
+            'userId': video_request.user_id,
+            'modelId': video_request.model_id,
+            'creditsDeducted': credits_to_deduct,
+            'status': 'pending',
+            'createdAt': firestore.SERVER_TIMESTAMP,
+            'params': {k: v for k, v in video_request.params.items() if k != 'image' and not (isinstance(v, str) and v.startswith('data:'))}
+        })
+
+        # Execute atomic credit deduction
+        transaction = db.transaction()
+        credits_before = deduct_credits_atomically(transaction, user_ref, credits_to_deduct)
+        logger.info(f"Atomically deducted {credits_to_deduct} credits from user {video_request.user_id}. Before: {credits_before}, After: {credits_before - credits_to_deduct}")
+
+        # Update transaction status to processing
+        transaction_ref.update({
+            'status': 'processing',
+            'creditsBefore': credits_before,
+            'creditsAfter': credits_before - credits_to_deduct,
+            'processedAt': firestore.SERVER_TIMESTAMP
+        })
+
+    except ValueError as e:
+        # Update transaction as failed before deduction
+        transaction_ref.update({
+            'status': 'failed_validation',
+            'error': str(e),
+            'failedAt': firestore.SERVER_TIMESTAMP
+        })
+        error_message = str(e)
+        if "User not found" in error_message:
             raise HTTPException(status_code=403, detail="User not found.")
-        user_credits = user_doc.to_dict().get('credits', 0)
-        if user_credits < credits_to_deduct:
-            raise HTTPException(status_code=403, detail=f"Insufficient credits. Required: {credits_to_deduct}, Available: {user_credits}")
-        # Deduct calculated credits
-        user_ref.update({'credits': firestore.Increment(-credits_to_deduct)})
-    except HTTPException:
-        raise
+        elif "Insufficient credits" in error_message:
+            raise HTTPException(status_code=403, detail=error_message)
+        else:
+            raise HTTPException(status_code=500, detail=f"Credit deduction failed: {e}")
     except Exception as e:
+        logger.error(f"Transaction failed for user {video_request.user_id}: {e}")
+        transaction_ref.update({
+            'status': 'failed_transaction',
+            'error': str(e),
+            'failedAt': firestore.SERVER_TIMESTAMP
+        })
         raise HTTPException(status_code=500, detail=f"Failed to manage credits: {e}")
 
+    # --- GENERATION PHASE ---
     try:
         api_params = video_request.params.copy()
         image_param_name = MODEL_IMAGE_PARAMS.get(video_request.model_id)
@@ -857,22 +972,71 @@ async def generate_media(request: Request, video_request: VideoRequest):
                 api_params[image_param_name] = io.BytesIO(base64.b64decode(encoded_data))
             else:
                 api_params.pop(image_param_name, None)
+
         replicate_output = replicate.run(model_string, input=api_params)
         processed_output = str(replicate_output) if isinstance(replicate_output, FileOutput) else replicate_output
 
-        # Format output
+        # Update transaction as completed
         if isinstance(processed_output, str):
-            return {"output_urls": [processed_output]}
+            output_urls = [processed_output]
         elif isinstance(processed_output, list):
-            return {"output_urls": [str(item) for item in processed_output]}
+            output_urls = [str(item) for item in processed_output]
         else:
             raise TypeError("Unexpected model output format.")
+
+        transaction_ref.update({
+            'status': 'completed',
+            'completedAt': firestore.SERVER_TIMESTAMP,
+            'outputUrls': output_urls
+        })
+
+        logger.info(f"Generation completed for user {video_request.user_id}, transaction {transaction_id}")
+        return {"output_urls": output_urls}
+
     except Exception as e:
         logger.error(f"Replicate task failed for user {video_request.user_id}. Refunding {credits_to_deduct} credits. Error: {e}")
+
+        # Update transaction as failed
+        transaction_ref.update({
+            'status': 'failed_generation',
+            'error': str(e),
+            'failedAt': firestore.SERVER_TIMESTAMP,
+            'refundAttempted': True
+        })
+
+        # --- REFUND WITH FAILED REFUND TRACKING ---
         try:
             user_ref.update({'credits': firestore.Increment(credits_to_deduct)})
+            transaction_ref.update({
+                'refundStatus': 'completed',
+                'refundedAt': firestore.SERVER_TIMESTAMP
+            })
+            logger.info(f"Successfully refunded {credits_to_deduct} credits to user {video_request.user_id}")
         except Exception as refund_e:
+            # CRITICAL: Log and store failed refund for manual resolution
             logger.critical(f"FAILED TO REFUND {credits_to_deduct} CREDITS for user {video_request.user_id}. Error: {refund_e}")
+
+            # Store in failed_credit_refunds collection for manual resolution
+            try:
+                db.collection('failed_credit_refunds').add({
+                    'userId': video_request.user_id,
+                    'creditsAmount': credits_to_deduct,
+                    'transactionId': transaction_id,
+                    'originalError': str(e),
+                    'refundError': str(refund_e),
+                    'createdAt': firestore.SERVER_TIMESTAMP,
+                    'resolved': False,
+                    'retryCount': 0
+                })
+
+                # Update transaction with refund failure
+                transaction_ref.update({
+                    'refundStatus': 'failed',
+                    'refundError': str(refund_e)
+                })
+            except Exception as log_e:
+                logger.critical(f"CRITICAL: Failed to log refund failure for user {video_request.user_id}: {log_e}")
+
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
 
 # ========================

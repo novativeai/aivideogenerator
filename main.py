@@ -42,7 +42,8 @@ ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '').split(',') if os.getenv('ALLO
     "http://localhost:3000",
     "https://ai-video-generator-mvp.netlify.app",
     "http://localhost:3001",
-    "https://reelzila-admin.netlify.app"
+    "https://reelzila-admin.netlify.app",
+    "https://video-generator-admin.vercel.app"
 ]
 
 # Validate origins are HTTPS in production

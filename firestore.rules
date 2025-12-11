@@ -77,6 +77,17 @@ service cloud.firestore {
         // Only server can update/delete withdrawal requests
         allow update, delete: if false;
       }
+
+      // ============================================
+      // PURCHASED VIDEOS SUBCOLLECTION
+      // ============================================
+      match /purchased_videos/{videoId} {
+        // Users can read their own purchased videos
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Only server can create/update/delete purchased videos
+        allow create, update, delete: if false;
+      }
     }
 
     // ============================================
@@ -133,6 +144,25 @@ service cloud.firestore {
       allow read: if true;
 
       // Only admins or the video owner can update
+      allow update: if request.auth != null
+        && (resource.data.sellerId == request.auth.uid
+            || (exists(/databases/$(database)/documents/users/$(request.auth.uid))
+                && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true));
+
+      // Only server/admin can create or delete
+      allow create, delete: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    // ============================================
+    // MARKETPLACE LISTINGS COLLECTION
+    // ============================================
+    match /marketplace_listings/{listingId} {
+      // Anyone can read published marketplace listings (public)
+      allow read: if true;
+
+      // Only admins or the listing owner can update
       allow update: if request.auth != null
         && (resource.data.sellerId == request.auth.uid
             || (exists(/databases/$(database)/documents/users/$(request.auth.uid))

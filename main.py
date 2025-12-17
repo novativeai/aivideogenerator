@@ -21,6 +21,8 @@ import hashlib
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+import resend
+from email_templates import get_new_withdrawal_request_email, get_payout_approved_email, get_payout_completed_email, get_payout_rejected_email
 
 # Configure logging
 logging.basicConfig(
@@ -35,6 +37,17 @@ app = FastAPI()
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# --- Resend Email Configuration ---
+RESEND_API_KEY = os.getenv('RESEND_API_KEY')
+RESEND_FROM_EMAIL = os.getenv('RESEND_FROM_EMAIL', 'onboarding@resend.dev')
+ADMIN_EMAIL = os.getenv('ADMIN_EMAIL')
+
+if RESEND_API_KEY:
+    resend.api_key = RESEND_API_KEY
+    logger.info("Resend email service configured")
+else:
+    logger.warning("RESEND_API_KEY not configured - email notifications disabled")
 
 # --- CORS Middleware ---
 # Load allowed origins from environment, fallback to secure defaults
@@ -1404,6 +1417,12 @@ async def approve_payout(request: Request, payout_id: str, action_data: PayoutAc
             'approvedAt': firestore.SERVER_TIMESTAMP
         })
 
+        amount = payout_data.get('amount', 0)
+        paypal_email = payout_data.get('paypalEmail', '')
+
+        # Send email notification to seller
+        await send_payout_status_email(user_id, 'approved', amount, paypal_email)
+
         logger.info(f"Payout {payout_id} approved for user {user_id}")
         return {"message": "Payout approved successfully"}
     except HTTPException:
@@ -1441,6 +1460,9 @@ async def reject_payout(request: Request, payout_id: str, action_data: PayoutAct
         user_ref.update({
             'sellerProfile.pendingBalance': firestore.Increment(amount)
         })
+
+        # Send email notification to seller
+        await send_payout_status_email(user_id, 'rejected', amount)
 
         logger.info(f"Payout {payout_id} rejected for user {user_id}, amount {amount} refunded")
         return {"message": "Payout rejected and balance refunded"}
@@ -1480,6 +1502,9 @@ async def complete_payout(request: Request, payout_id: str, action_data: PayoutA
             'sellerProfile.withdrawnBalance': firestore.Increment(amount)
         })
 
+        # Send email notification to seller
+        await send_payout_status_email(user_id, 'completed', amount)
+
         logger.info(f"Payout {payout_id} completed for user {user_id}, amount {amount}")
         return {"message": "Payout marked as completed"}
     except HTTPException:
@@ -1487,6 +1512,137 @@ async def complete_payout(request: Request, payout_id: str, action_data: PayoutA
     except Exception as e:
         logger.error(f"Failed to complete payout {payout_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to complete payout: {str(e)}")
+
+# --- Withdrawal Email Notification Endpoints ---
+
+class WithdrawalNotificationRequest(BaseModel):
+    requestId: str
+    amount: float
+    paypalEmail: EmailStr
+
+@app.post("/seller/withdrawal-request-notification")
+@limiter.limit("10/minute")
+async def send_withdrawal_notification(request: Request, notification_data: WithdrawalNotificationRequest, authorization: str = Header(...)):
+    """Send email notification to admin when a seller requests a withdrawal"""
+    try:
+        # Verify authentication
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+        token = authorization.split("Bearer ")[1]
+        decoded_token = auth.verify_id_token(token)
+        user_id = decoded_token['uid']
+
+        # Check if Resend is configured
+        if not RESEND_API_KEY:
+            logger.warning("RESEND_API_KEY not configured - skipping withdrawal notification email")
+            return {"message": "Email service not configured", "emailSent": False}
+
+        if not ADMIN_EMAIL:
+            logger.warning("ADMIN_EMAIL not configured - skipping withdrawal notification email")
+            return {"message": "Admin email not configured", "emailSent": False}
+
+        # Get user details from Firestore
+        user_doc = db.collection('users').document(user_id).get()
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_data = user_doc.to_dict()
+        seller_name = user_data.get('displayName') or user_data.get('name') or 'Unknown Seller'
+        seller_email = user_data.get('email', 'No email')
+
+        # Generate email HTML
+        email_html = get_new_withdrawal_request_email(
+            seller_name=seller_name,
+            seller_email=seller_email,
+            amount=notification_data.amount,
+            paypal_email=notification_data.paypalEmail,
+            seller_id=user_id,
+            request_id=notification_data.requestId
+        )
+
+        # Send email via Resend
+        params: resend.Emails.SendParams = {
+            "from": RESEND_FROM_EMAIL,
+            "to": [ADMIN_EMAIL],
+            "subject": f"💰 New Withdrawal Request - €{notification_data.amount:.2f} from {seller_name}",
+            "html": email_html,
+            "tags": [
+                {"name": "type", "value": "withdrawal_request"},
+                {"name": "seller_id", "value": user_id},
+            ],
+        }
+
+        email_response = resend.Emails.send(params)
+        logger.info(f"Withdrawal notification email sent for request {notification_data.requestId}: {email_response.get('id')}")
+
+        return {"message": "Notification sent successfully", "emailSent": True, "emailId": email_response.get('id')}
+
+    except auth.InvalidIdTokenError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to send withdrawal notification for request {notification_data.requestId}: {e}")
+        # Don't fail the request if email fails - withdrawal is still created
+        return {"message": f"Failed to send email: {str(e)}", "emailSent": False}
+
+
+async def send_payout_status_email(user_id: str, status: str, amount: float, paypal_email: str = ""):
+    """Helper function to send payout status emails to sellers"""
+    try:
+        if not RESEND_API_KEY:
+            logger.warning("RESEND_API_KEY not configured - skipping payout status email")
+            return False
+
+        # Get user details
+        user_doc = db.collection('users').document(user_id).get()
+        if not user_doc.exists:
+            logger.error(f"User {user_id} not found for payout email")
+            return False
+
+        user_data = user_doc.to_dict()
+        seller_name = user_data.get('displayName') or user_data.get('name') or 'Seller'
+        seller_email = user_data.get('email')
+
+        if not seller_email:
+            logger.error(f"No email found for user {user_id}")
+            return False
+
+        # Generate email based on status
+        if status == 'approved':
+            email_html = get_payout_approved_email(seller_name, amount, paypal_email)
+            subject = f"✓ Your Withdrawal of €{amount:.2f} Has Been Approved"
+        elif status == 'completed':
+            email_html = get_payout_completed_email(seller_name, amount)
+            subject = f"✓ €{amount:.2f} Has Been Sent to Your PayPal"
+        elif status == 'rejected':
+            email_html = get_payout_rejected_email(seller_name, amount)
+            subject = f"Withdrawal Request Update - €{amount:.2f}"
+        else:
+            logger.error(f"Unknown payout status: {status}")
+            return False
+
+        # Send email via Resend
+        params: resend.Emails.SendParams = {
+            "from": RESEND_FROM_EMAIL,
+            "to": [seller_email],
+            "subject": subject,
+            "html": email_html,
+            "tags": [
+                {"name": "type", "value": f"payout_{status}"},
+                {"name": "user_id", "value": user_id},
+            ],
+        }
+
+        email_response = resend.Emails.send(params)
+        logger.info(f"Payout {status} email sent to {seller_email}: {email_response.get('id')}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to send payout {status} email to user {user_id}: {e}")
+        return False
+
 
 # --- Main execution block ---
 if __name__ == "__main__":

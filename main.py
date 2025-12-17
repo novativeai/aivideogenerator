@@ -1521,6 +1521,377 @@ class WithdrawalNotificationRequest(BaseModel):
     amount: float
     paypalEmail: EmailStr
 
+class SellerProfileUpdateRequest(BaseModel):
+    paypalEmail: EmailStr
+
+class PayoutRequestCreate(BaseModel):
+    amount: float = Field(..., gt=0, le=10000, description="Withdrawal amount in EUR")
+    paypalEmail: EmailStr
+
+# --- User Authentication Dependency (for seller endpoints) ---
+async def verify_user_token(authorization: str = Header(...)):
+    """Verify Firebase ID token and return user ID"""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    token = authorization.split("Bearer ")[1]
+    try:
+        decoded_token = auth.verify_id_token(token)
+        return decoded_token['uid']
+    except auth.InvalidIdTokenError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+    except auth.ExpiredIdTokenError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+
+# --- Seller Endpoints ---
+
+@app.get("/seller/profile")
+@limiter.limit("30/minute")
+async def get_seller_profile(request: Request, user_id: str = Depends(verify_user_token)):
+    """Get the seller profile for the authenticated user"""
+    try:
+        user_doc = db.collection('users').document(user_id).get()
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_data = user_doc.to_dict()
+        seller_profile = user_data.get('sellerProfile', {})
+
+        # Get seller balance from subcollection
+        balance_doc = db.collection('users').document(user_id).collection('seller_balance').document('current').get()
+        balance_data = balance_doc.to_dict() if balance_doc.exists else {}
+
+        return {
+            "profile": {
+                "displayName": user_data.get('displayName', ''),
+                "email": user_data.get('email', ''),
+                "paypalEmail": seller_profile.get('paypalEmail', ''),
+                "isVerifiedSeller": seller_profile.get('isVerifiedSeller', False),
+                "verificationStatus": seller_profile.get('verificationStatus', 'unverified'),
+                "createdAt": seller_profile.get('createdAt'),
+            },
+            "balance": {
+                "availableBalance": balance_data.get('availableBalance', 0),
+                "pendingBalance": balance_data.get('pendingBalance', 0),
+                "totalEarnings": balance_data.get('totalEarnings', 0),
+                "withdrawnBalance": seller_profile.get('withdrawnBalance', 0),
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get seller profile for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get seller profile: {str(e)}")
+
+
+@app.post("/seller/profile")
+@limiter.limit("10/minute")
+async def update_seller_profile(request: Request, profile_data: SellerProfileUpdateRequest, user_id: str = Depends(verify_user_token)):
+    """Update the seller profile for the authenticated user"""
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Update seller profile with PayPal email
+        user_ref.update({
+            'sellerProfile.paypalEmail': profile_data.paypalEmail,
+            'sellerProfile.updatedAt': firestore.SERVER_TIMESTAMP
+        })
+
+        logger.info(f"Seller profile updated for user {user_id}")
+        return {"message": "Profile updated successfully", "paypalEmail": profile_data.paypalEmail}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update seller profile for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}")
+
+
+@app.get("/seller/balance")
+@limiter.limit("30/minute")
+async def get_seller_balance(request: Request, user_id: str = Depends(verify_user_token)):
+    """Get the seller balance for the authenticated user"""
+    try:
+        # Get seller balance from subcollection
+        balance_doc = db.collection('users').document(user_id).collection('seller_balance').document('current').get()
+        balance_data = balance_doc.to_dict() if balance_doc.exists else {}
+
+        # Get withdrawn balance from user profile
+        user_doc = db.collection('users').document(user_id).get()
+        user_data = user_doc.to_dict() if user_doc.exists else {}
+        seller_profile = user_data.get('sellerProfile', {})
+
+        return {
+            "availableBalance": balance_data.get('availableBalance', 0),
+            "pendingBalance": balance_data.get('pendingBalance', 0),
+            "totalEarnings": balance_data.get('totalEarnings', 0),
+            "withdrawnBalance": seller_profile.get('withdrawnBalance', 0),
+            "lastUpdated": balance_data.get('lastUpdated')
+        }
+    except Exception as e:
+        logger.error(f"Failed to get seller balance for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get balance: {str(e)}")
+
+
+@app.get("/seller/transactions")
+@limiter.limit("30/minute")
+async def get_seller_transactions(request: Request, user_id: str = Depends(verify_user_token), limit: int = 50, offset: int = 0):
+    """Get transaction history for the authenticated seller"""
+    try:
+        # Query seller transactions subcollection
+        transactions_ref = db.collection('users').document(user_id).collection('seller_transactions')
+        query = transactions_ref.order_by('createdAt', direction=firestore.Query.DESCENDING).limit(limit).offset(offset)
+
+        transactions = []
+        for doc in query.stream():
+            tx_data = doc.to_dict()
+            tx_data['id'] = doc.id
+            # Convert Firestore timestamps to ISO strings
+            if tx_data.get('createdAt'):
+                tx_data['createdAt'] = tx_data['createdAt'].isoformat() if hasattr(tx_data['createdAt'], 'isoformat') else str(tx_data['createdAt'])
+            transactions.append(tx_data)
+
+        # Get total count for pagination
+        total_count = len(list(transactions_ref.stream()))
+
+        return {
+            "transactions": transactions,
+            "total": total_count,
+            "limit": limit,
+            "offset": offset
+        }
+    except Exception as e:
+        logger.error(f"Failed to get seller transactions for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get transactions: {str(e)}")
+
+
+@app.post("/seller/payout-request")
+@limiter.limit("5/minute")
+async def create_payout_request(request: Request, payout_data: PayoutRequestCreate, user_id: str = Depends(verify_user_token)):
+    """Create a new payout/withdrawal request for the authenticated seller"""
+    try:
+        # Get seller balance to verify available funds
+        balance_doc = db.collection('users').document(user_id).collection('seller_balance').document('current').get()
+        balance_data = balance_doc.to_dict() if balance_doc.exists else {}
+        available_balance = balance_data.get('availableBalance', 0)
+
+        if payout_data.amount > available_balance:
+            raise HTTPException(status_code=400, detail=f"Insufficient balance. Available: €{available_balance:.2f}")
+
+        # Check for pending payout requests
+        pending_requests = db.collection('users').document(user_id).collection('payout_requests').where('status', '==', 'pending').stream()
+        pending_count = len(list(pending_requests))
+        if pending_count > 0:
+            raise HTTPException(status_code=400, detail="You already have a pending payout request")
+
+        # Create payout request document
+        payout_ref = db.collection('users').document(user_id).collection('payout_requests').document()
+        payout_request = {
+            'id': payout_ref.id,
+            'userId': user_id,
+            'amount': payout_data.amount,
+            'paypalEmail': payout_data.paypalEmail,
+            'status': 'pending',
+            'createdAt': firestore.SERVER_TIMESTAMP,
+            'docPath': f'users/{user_id}/payout_requests/{payout_ref.id}'
+        }
+        payout_ref.set(payout_request)
+
+        # Deduct from available balance and add to pending
+        balance_ref = db.collection('users').document(user_id).collection('seller_balance').document('current')
+        balance_ref.update({
+            'availableBalance': firestore.Increment(-payout_data.amount),
+            'pendingBalance': firestore.Increment(payout_data.amount),
+            'lastUpdated': firestore.SERVER_TIMESTAMP
+        })
+
+        logger.info(f"Payout request created for user {user_id}: €{payout_data.amount}")
+        return {
+            "message": "Payout request created successfully",
+            "requestId": payout_ref.id,
+            "amount": payout_data.amount,
+            "paypalEmail": payout_data.paypalEmail,
+            "status": "pending"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create payout request for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create payout request: {str(e)}")
+
+
+@app.get("/seller/payout-requests")
+@limiter.limit("30/minute")
+async def get_seller_payout_requests(request: Request, user_id: str = Depends(verify_user_token), limit: int = 20, status: str = None):
+    """Get payout request history for the authenticated seller"""
+    try:
+        requests_ref = db.collection('users').document(user_id).collection('payout_requests')
+
+        # Apply status filter if provided
+        if status and status in ['pending', 'approved', 'completed', 'rejected']:
+            query = requests_ref.where('status', '==', status).order_by('createdAt', direction=firestore.Query.DESCENDING).limit(limit)
+        else:
+            query = requests_ref.order_by('createdAt', direction=firestore.Query.DESCENDING).limit(limit)
+
+        payout_requests = []
+        for doc in query.stream():
+            req_data = doc.to_dict()
+            req_data['id'] = doc.id
+            # Convert timestamps
+            for field in ['createdAt', 'approvedAt', 'completedAt', 'rejectedAt']:
+                if req_data.get(field) and hasattr(req_data[field], 'isoformat'):
+                    req_data[field] = req_data[field].isoformat()
+            payout_requests.append(req_data)
+
+        return {
+            "payoutRequests": payout_requests,
+            "total": len(payout_requests)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get payout requests for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get payout requests: {str(e)}")
+
+
+@app.get("/seller/transactions/export")
+@limiter.limit("5/minute")
+async def export_seller_transactions(request: Request, user_id: str = Depends(verify_user_token), format: str = "csv", start_date: str = None, end_date: str = None):
+    """Export seller transactions as CSV or PDF"""
+    try:
+        from datetime import datetime
+        import io
+        import csv
+        from fastapi.responses import StreamingResponse
+
+        # Query transactions
+        transactions_ref = db.collection('users').document(user_id).collection('seller_transactions')
+        query = transactions_ref.order_by('createdAt', direction=firestore.Query.DESCENDING)
+
+        transactions = []
+        for doc in query.stream():
+            tx_data = doc.to_dict()
+            tx_data['id'] = doc.id
+
+            # Filter by date if provided
+            if start_date or end_date:
+                tx_date = tx_data.get('createdAt')
+                if tx_date:
+                    if hasattr(tx_date, 'isoformat'):
+                        tx_date_str = tx_date.strftime('%Y-%m-%d')
+                    else:
+                        continue
+                    if start_date and tx_date_str < start_date:
+                        continue
+                    if end_date and tx_date_str > end_date:
+                        continue
+
+            transactions.append(tx_data)
+
+        if format.lower() == "csv":
+            # Generate CSV
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(['Transaction ID', 'Type', 'Amount (EUR)', 'Description', 'Date', 'Status'])
+
+            for tx in transactions:
+                date_str = ''
+                if tx.get('createdAt'):
+                    if hasattr(tx['createdAt'], 'strftime'):
+                        date_str = tx['createdAt'].strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        date_str = str(tx['createdAt'])
+
+                writer.writerow([
+                    tx.get('id', ''),
+                    tx.get('type', ''),
+                    f"{tx.get('amount', 0):.2f}",
+                    tx.get('description', ''),
+                    date_str,
+                    tx.get('status', '')
+                ])
+
+            output.seek(0)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=transactions_{user_id[:8]}_{datetime.now().strftime('%Y%m%d')}.csv"}
+            )
+
+        elif format.lower() == "pdf":
+            # Generate PDF using reportlab
+            try:
+                from reportlab.lib import colors
+                from reportlab.lib.pagesizes import letter, A4
+                from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+                from reportlab.lib.styles import getSampleStyleSheet
+
+                buffer = io.BytesIO()
+                doc = SimpleDocTemplate(buffer, pagesize=A4)
+                elements = []
+                styles = getSampleStyleSheet()
+
+                # Title
+                elements.append(Paragraph("Transaction History", styles['Heading1']))
+                elements.append(Spacer(1, 20))
+
+                # Table data
+                table_data = [['ID', 'Type', 'Amount', 'Description', 'Date', 'Status']]
+                for tx in transactions:
+                    date_str = ''
+                    if tx.get('createdAt'):
+                        if hasattr(tx['createdAt'], 'strftime'):
+                            date_str = tx['createdAt'].strftime('%Y-%m-%d')
+                        else:
+                            date_str = str(tx['createdAt'])[:10]
+
+                    table_data.append([
+                        tx.get('id', '')[:8] + '...' if len(tx.get('id', '')) > 8 else tx.get('id', ''),
+                        tx.get('type', ''),
+                        f"€{tx.get('amount', 0):.2f}",
+                        tx.get('description', '')[:30] + '...' if len(tx.get('description', '')) > 30 else tx.get('description', ''),
+                        date_str,
+                        tx.get('status', '')
+                    ])
+
+                table = Table(table_data)
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 8),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ]))
+                elements.append(table)
+
+                doc.build(elements)
+                buffer.seek(0)
+
+                return StreamingResponse(
+                    buffer,
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=transactions_{user_id[:8]}_{datetime.now().strftime('%Y%m%d')}.pdf"}
+                )
+            except ImportError:
+                raise HTTPException(status_code=500, detail="PDF export not available - reportlab not installed")
+        else:
+            raise HTTPException(status_code=400, detail="Invalid format. Use 'csv' or 'pdf'")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to export transactions for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to export transactions: {str(e)}")
+
+
 @app.post("/seller/withdrawal-request-notification")
 @limiter.limit("10/minute")
 async def send_withdrawal_notification(request: Request, notification_data: WithdrawalNotificationRequest, authorization: str = Header(...)):

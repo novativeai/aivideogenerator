@@ -57,6 +57,7 @@ ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '').split(',') if os.getenv('ALLO
     "http://localhost:3001",
     "https://reelzila-admin.netlify.app",
     "https://video-generator-admin.vercel.app",
+    "https://reelzila-admin.vercel.app",
     "https://video-generator-frontend-beta.vercel.app",
     "https://reelzila.studio"
 ]

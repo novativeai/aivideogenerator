@@ -6,14 +6,13 @@ from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, validator, EmailStr, Field
 import re
-import replicate
+import fal_client
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 from typing import Dict, Any, List
 import base64
 import json
 import io
-from replicate.helpers import FileOutput
 from datetime import datetime
 import requests
 import hmac
@@ -201,66 +200,106 @@ class AdminBillingUpdateRequest(BaseModel):
     state: str = Field(..., min_length=1, max_length=100)
     validTill: str = Field(..., pattern=r'^\d{2}/\d{2}$', description="Expiry in MM/YY format")
 
-# --- Model Mapping ---
-REPLICATE_MODELS = {
-    "kling-2.5": "kwaivgi/kling-v2.5-turbo-pro",
-    "veo-3.1": "google/veo-3.1",
-    "seedance-1-pro": "bytedance/seedance-1-pro",
-    "wan-2.2": "wan-video/wan-2.2-i2v-a14b",
-    "flux-1.1-pro-ultra": "black-forest-labs/flux-1.1-pro-ultra"
-}
-MODEL_IMAGE_PARAMS = {
-    "kling-2.5": "start_image",
-    "veo-3.1": "image",
-    "seedance-1-pro": "image",
-    "wan-2.2": "image",
-    "flux-1.1-pro-ultra": None,
+# --- fal.ai Model Mapping ---
+# Each model has t2v (text-to-video), i2v (image-to-video), or t2i (text-to-image) endpoints
+FAL_MODELS = {
+    "veo-3.1": {
+        "t2v": "fal-ai/veo3.1",
+        "i2v": "fal-ai/veo3.1/reference-to-video",
+        "image_param": "image_url"
+    },
+    "sora-2": {
+        "t2v": "fal-ai/sora-2/text-to-video",
+        "i2v": "fal-ai/sora-2/image-to-video/pro",
+        "image_param": "image_url"
+    },
+    "kling-2.6": {
+        "t2v": "fal-ai/kling-video/v2.6/pro/text-to-video",
+        "i2v": "fal-ai/kling-video/v2.6/pro/image-to-video",
+        "image_param": "image_url"
+    },
+    "ltx-2": {
+        "t2v": "fal-ai/ltx-video",
+        "i2v": "fal-ai/ltx-video/image-to-video",
+        "image_param": "image_url"
+    },
+    "hailuo-2.3-pro": {
+        "t2v": "fal-ai/minimax/hailuo-2.3/pro/text-to-video",
+        "i2v": "fal-ai/minimax/hailuo-2.3/pro/image-to-video",
+        "image_param": "image_url"
+    },
+    "nano-banana-pro": {
+        "t2i": "fal-ai/nano-banana-pro",
+        "image_param": None  # Text-to-image only, no image input
+    }
 }
 
 # --- Dynamic Credit Pricing Configuration ---
+# Based on fal.ai pricing: ~10 credits = $1.00
 MODEL_CREDIT_PRICING = {
-    "kling-2.5": {
-        "base": 10,
-        "modifiers": [
-            {
-                "param": "duration",
-                "values": {"5": 10, "10": 20},
-                "type": "set"
-            }
-        ]
-    },
+    # VEO 3.1: $0.40/sec with audio, $0.20/sec without
     "veo-3.1": {
-        "base": 100,
+        "base": 32,
         "modifiers": [
             {
                 "param": "duration",
-                "values": {"4": 50, "6": 75, "8": 100},
+                "values": {"4": 16, "6": 24, "8": 32},
+                "type": "set"
+            },
+            {
+                "param": "generate_audio",
+                "values": {"false": 0.5},
+                "type": "multiply"
+            }
+        ]
+    },
+    # Sora 2: ~$0.10/sec
+    "sora-2": {
+        "base": 4,
+        "modifiers": [
+            {
+                "param": "duration",
+                "values": {"4": 4, "8": 8, "12": 12},
                 "type": "set"
             }
         ]
     },
-    "seedance-1-pro": {
-        "base": 10,
+    # Kling 2.6 Pro: ~$0.10/sec
+    "kling-2.6": {
+        "base": 5,
+        "modifiers": [
+            {
+                "param": "duration",
+                "values": {"5": 5, "10": 10},
+                "type": "set"
+            }
+        ]
+    },
+    # LTX 2: Very affordable ~$0.02/video
+    "ltx-2": {
+        "base": 1
+    },
+    # Hailuo 2.3 Pro: ~$0.08/sec
+    "hailuo-2.3-pro": {
+        "base": 4,
+        "modifiers": [
+            {
+                "param": "duration",
+                "values": {"5": 4, "10": 8},
+                "type": "set"
+            }
+        ]
+    },
+    # Nano Banana Pro: $0.15/image (1K), $0.30 (4K)
+    "nano-banana-pro": {
+        "base": 2,
         "modifiers": [
             {
                 "param": "resolution",
-                "values": {"480p": 10, "720p": 15, "1080p": 20},
+                "values": {"1K": 2, "2K": 3, "4K": 4},
                 "type": "set"
             }
         ]
-    },
-    "wan-2.2": {
-        "base": 3,
-        "modifiers": [
-            {
-                "param": "resolution",
-                "values": {"480p": 3, "720p": 5},
-                "type": "set"
-            }
-        ]
-    },
-    "flux-1.1-pro-ultra": {
-        "base": 2
     }
 }
 
@@ -381,7 +420,7 @@ async def health_check_detailed(request: Request):
             "has_storage_bucket": bool(os.getenv('FIREBASE_STORAGE_BUCKET')),
             "has_paytrust_key": bool(os.getenv('PAYTRUST_API_KEY')),
             "has_signing_key": bool(os.getenv('PAYTRUST_SIGNING_KEY')),
-            "has_replicate_token": bool(os.getenv('REPLICATE_API_TOKEN')),
+            "has_fal_key": bool(os.getenv('FAL_KEY')),
             "env_mode": os.getenv('ENV', 'development')
         },
         "timestamp": datetime.now().isoformat()
@@ -879,11 +918,44 @@ async def create_customer_portal(request: Request, portal_request: PortalRequest
     """
     user_ref = db.collection('users').document(portal_request.userId)
     user_doc = user_ref.get()
-    if not user_doc.exists: 
+    if not user_doc.exists:
         raise HTTPException(status_code=404, detail="User not found.")
-    
+
     # For now, redirect to your own account management page
     return {"portalUrl": "https://ai-video-generator-mvp.netlify.app/account"}
+
+
+# --- fal.ai Image Upload Helper ---
+def upload_image_to_fal(base64_data: str) -> str | None:
+    """
+    Upload base64 image data to fal.ai and return the URL.
+    fal.ai requires image URLs, not raw base64 data.
+    """
+    if not base64_data or not isinstance(base64_data, str) or not base64_data.startswith("data:image"):
+        return None
+
+    try:
+        # Extract the base64 content after the data URI prefix
+        _header, encoded_data = base64_data.split(",", 1)
+        image_bytes = base64.b64decode(encoded_data)
+
+        # Determine content type from header
+        content_type = "image/png"
+        if "jpeg" in _header or "jpg" in _header:
+            content_type = "image/jpeg"
+        elif "webp" in _header:
+            content_type = "image/webp"
+        elif "gif" in _header:
+            content_type = "image/gif"
+
+        # Upload to fal.ai file storage
+        file_url = fal_client.upload(image_bytes, content_type=content_type)
+        logger.info(f"Image uploaded to fal.ai: {file_url[:50]}...")
+        return file_url
+    except Exception as e:
+        logger.error(f"Failed to upload image to fal.ai: {e}")
+        return None
+
 
 @app.post("/generate-video")
 @limiter.limit("10/minute")
@@ -892,9 +964,11 @@ async def generate_media(request: Request, video_request: VideoRequest):
         raise HTTPException(status_code=500, detail="Firestore database not initialized.")
 
     user_ref = db.collection('users').document(video_request.user_id)
-    model_string = REPLICATE_MODELS.get(video_request.model_id)
-    if not model_string:
-        raise HTTPException(status_code=400, detail="Invalid model ID provided.")
+
+    # Get fal.ai model configuration
+    model_config = FAL_MODELS.get(video_request.model_id)
+    if not model_config:
+        raise HTTPException(status_code=400, detail=f"Invalid model ID: {video_request.model_id}. Valid models: {list(FAL_MODELS.keys())}")
 
     # Calculate credits dynamically based on model and parameters
     try:
@@ -978,40 +1052,93 @@ async def generate_media(request: Request, video_request: VideoRequest):
         })
         raise HTTPException(status_code=500, detail=f"Failed to manage credits: {e}")
 
-    # --- GENERATION PHASE ---
+    # --- FAL.AI GENERATION PHASE ---
     try:
         api_params = video_request.params.copy()
-        image_param_name = MODEL_IMAGE_PARAMS.get(video_request.model_id)
-        if image_param_name and image_param_name in api_params:
-            image_data = api_params.get(image_param_name)
-            if image_data and isinstance(image_data, str) and image_data.startswith("data:image"):
-                _header, encoded_data = image_data.split(",", 1)
-                api_params[image_param_name] = io.BytesIO(base64.b64decode(encoded_data))
-            else:
-                api_params.pop(image_param_name, None)
 
-        replicate_output = replicate.run(model_string, input=api_params)
-        processed_output = str(replicate_output) if isinstance(replicate_output, FileOutput) else replicate_output
+        # Determine which endpoint to use (T2V, I2V, or T2I)
+        image_param = model_config.get("image_param")
+        has_image = False
+
+        # Check for image in params and upload to fal.ai
+        for param_name in ["image", "start_image", "image_url"]:
+            if param_name in api_params:
+                image_data = api_params.get(param_name)
+                if image_data and isinstance(image_data, str) and image_data.startswith("data:image"):
+                    # Upload to fal.ai and replace with URL
+                    uploaded_url = upload_image_to_fal(image_data)
+                    if uploaded_url and image_param:
+                        # Remove the original param and use the model's expected parameter name
+                        api_params.pop(param_name, None)
+                        api_params[image_param] = uploaded_url
+                        has_image = True
+                        logger.info(f"Image uploaded for {video_request.model_id}, using I2V endpoint")
+                        break
+                else:
+                    # Remove empty or invalid image params
+                    api_params.pop(param_name, None)
+
+        # Select the appropriate model endpoint
+        if "t2i" in model_config:
+            # Image generation model (Nano Banana Pro)
+            model_endpoint = model_config["t2i"]
+            logger.info(f"Using T2I endpoint: {model_endpoint}")
+        elif has_image and model_config.get("i2v"):
+            # Image-to-video
+            model_endpoint = model_config["i2v"]
+            logger.info(f"Using I2V endpoint: {model_endpoint}")
+        elif model_config.get("t2v"):
+            # Text-to-video
+            model_endpoint = model_config["t2v"]
+            logger.info(f"Using T2V endpoint: {model_endpoint}")
+        else:
+            raise ValueError(f"Model {video_request.model_id} has no valid endpoint configured")
+
+        # Call fal.ai API
+        logger.info(f"Calling fal.ai: {model_endpoint} for user {video_request.user_id}")
+        fal_result = fal_client.run(model_endpoint, arguments=api_params)
+
+        # Extract output URLs from fal.ai response
+        output_urls = []
+        if "video" in fal_result:
+            # Video output (most video models)
+            video_data = fal_result["video"]
+            if isinstance(video_data, dict) and "url" in video_data:
+                output_urls = [video_data["url"]]
+            elif isinstance(video_data, str):
+                output_urls = [video_data]
+        elif "images" in fal_result:
+            # Multiple image outputs (Nano Banana Pro)
+            output_urls = [img["url"] if isinstance(img, dict) else img for img in fal_result["images"]]
+        elif "image" in fal_result:
+            # Single image output
+            img_data = fal_result["image"]
+            if isinstance(img_data, dict) and "url" in img_data:
+                output_urls = [img_data["url"]]
+            elif isinstance(img_data, str):
+                output_urls = [img_data]
+        elif "url" in fal_result:
+            # Direct URL in response
+            output_urls = [fal_result["url"]]
+        else:
+            logger.error(f"Unexpected fal.ai response format: {list(fal_result.keys())}")
+            raise TypeError(f"Unexpected fal.ai response format. Keys: {list(fal_result.keys())}")
+
+        if not output_urls:
+            raise ValueError("No output URLs returned from fal.ai")
 
         # Update transaction as completed
-        if isinstance(processed_output, str):
-            output_urls = [processed_output]
-        elif isinstance(processed_output, list):
-            output_urls = [str(item) for item in processed_output]
-        else:
-            raise TypeError("Unexpected model output format.")
-
         transaction_ref.update({
             'status': 'completed',
             'completedAt': firestore.SERVER_TIMESTAMP,
             'outputUrls': output_urls
         })
 
-        logger.info(f"Generation completed for user {video_request.user_id}, transaction {transaction_id}")
+        logger.info(f"Generation completed for user {video_request.user_id}, transaction {transaction_id}. Outputs: {len(output_urls)}")
         return {"output_urls": output_urls}
 
     except Exception as e:
-        logger.error(f"Replicate task failed for user {video_request.user_id}. Refunding {credits_to_deduct} credits. Error: {e}")
+        logger.error(f"fal.ai generation failed for user {video_request.user_id}. Refunding {credits_to_deduct} credits. Error: {e}")
 
         # Update transaction as failed
         transaction_ref.update({
@@ -2021,7 +2148,6 @@ async def send_payout_status_email(user_id: str, status: str, amount: float, pay
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    if not os.getenv("REPLICATE_API_TOKEN"):
-        logger.critical("REPLICATE_API_TOKEN not set - application cannot start")
-    else:
-        uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    if not os.getenv("FAL_KEY"):
+        logger.warning("FAL_KEY not set - generation will fail. Get your key at https://fal.ai")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

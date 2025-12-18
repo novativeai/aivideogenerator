@@ -1,6 +1,6 @@
 uvicorn[standard]
 python-dotenv
-replicate
+fal-client>=0.5.0
 firebase-admin
 fastapi
 pydantic

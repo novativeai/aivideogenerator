@@ -1,54 +1,35 @@
 """
 Comprehensive unit tests for the calculate_credits function.
-Tests all models, parameter variations, and edge cases.
+Tests all fal.ai models, parameter variations, and edge cases.
 """
 import pytest
 from typing import Dict, Any
 
 # --- Model Credit Pricing Configuration (copied from main.py for testing) ---
 MODEL_CREDIT_PRICING = {
-    "kling-2.5": {
-        "base": 10,
-        "modifiers": [
-            {
-                "param": "duration",
-                "values": {"5": 10, "10": 20},
-                "type": "set"
-            }
-        ]
-    },
     "veo-3.1": {
-        "base": 100,
+        "base": 32,
         "modifiers": [
-            {
-                "param": "duration",
-                "values": {"4": 50, "6": 75, "8": 100},
-                "type": "set"
-            }
+            {"param": "duration", "values": {"4": 16, "6": 24, "8": 32}, "type": "set"},
+            {"param": "generate_audio", "values": {"false": 0.5}, "type": "multiply"}
         ]
     },
-    "seedance-1-pro": {
-        "base": 10,
-        "modifiers": [
-            {
-                "param": "resolution",
-                "values": {"480p": 10, "720p": 15, "1080p": 20},
-                "type": "set"
-            }
-        ]
+    "sora-2": {
+        "base": 4,
+        "modifiers": [{"param": "duration", "values": {"4": 4, "8": 8, "12": 12}, "type": "set"}]
     },
-    "wan-2.2": {
-        "base": 3,
-        "modifiers": [
-            {
-                "param": "resolution",
-                "values": {"480p": 3, "720p": 5},
-                "type": "set"
-            }
-        ]
+    "kling-2.6": {
+        "base": 5,
+        "modifiers": [{"param": "duration", "values": {"5": 5, "10": 10}, "type": "set"}]
     },
-    "flux-1.1-pro-ultra": {
-        "base": 2
+    "ltx-2": {"base": 1},
+    "hailuo-2.3-pro": {
+        "base": 4,
+        "modifiers": [{"param": "duration", "values": {"5": 4, "10": 8}, "type": "set"}]
+    },
+    "nano-banana-pro": {
+        "base": 2,
+        "modifiers": [{"param": "resolution", "values": {"1K": 2, "2K": 3, "4K": 4}, "type": "set"}]
     }
 }
 
@@ -113,119 +94,154 @@ def calculate_credits(model_id: str, params: Dict[str, Any]) -> int:
 
 
 class TestCalculateCreditsBasicModels:
-    """Test all 5 models with default parameters."""
-
-    def test_kling_2_5_default_params(self):
-        """Test Kling 2.5 with default 5-second duration."""
-        result = calculate_credits("kling-2.5", {"duration": "5"})
-        assert result == 10
-
-    def test_kling_2_5_no_duration(self):
-        """Test Kling 2.5 with no duration specified uses base credits."""
-        result = calculate_credits("kling-2.5", {})
-        assert result == 10  # Base credits
+    """Test all 6 fal.ai models with default parameters."""
 
     def test_veo_3_1_default_params(self):
         """Test VEO 3.1 with default 8-second duration."""
         result = calculate_credits("veo-3.1", {"duration": "8"})
-        assert result == 100
+        assert result == 32
 
     def test_veo_3_1_no_duration(self):
         """Test VEO 3.1 with no duration specified uses base credits."""
         result = calculate_credits("veo-3.1", {})
-        assert result == 100  # Base credits
+        assert result == 32  # Base credits
 
-    def test_seedance_1_pro_default_params(self):
-        """Test Seedance 1 Pro with default 480p resolution."""
-        result = calculate_credits("seedance-1-pro", {"resolution": "480p"})
-        assert result == 10
+    def test_sora_2_default_params(self):
+        """Test Sora 2 with default 4-second duration."""
+        result = calculate_credits("sora-2", {"duration": "4"})
+        assert result == 4
 
-    def test_seedance_1_pro_no_resolution(self):
-        """Test Seedance 1 Pro with no resolution specified uses base credits."""
-        result = calculate_credits("seedance-1-pro", {})
-        assert result == 10  # Base credits
+    def test_sora_2_no_duration(self):
+        """Test Sora 2 with no duration specified uses base credits."""
+        result = calculate_credits("sora-2", {})
+        assert result == 4  # Base credits
 
-    def test_wan_2_2_default_params(self):
-        """Test WAN 2.2 with default 480p resolution."""
-        result = calculate_credits("wan-2.2", {"resolution": "480p"})
+    def test_kling_2_6_default_params(self):
+        """Test Kling 2.6 with default 5-second duration."""
+        result = calculate_credits("kling-2.6", {"duration": "5"})
+        assert result == 5
+
+    def test_kling_2_6_no_duration(self):
+        """Test Kling 2.6 with no duration specified uses base credits."""
+        result = calculate_credits("kling-2.6", {})
+        assert result == 5  # Base credits
+
+    def test_ltx_2_default_params(self):
+        """Test LTX 2 (fixed price, no modifiers)."""
+        result = calculate_credits("ltx-2", {})
+        assert result == 1
+
+    def test_ltx_2_with_irrelevant_params(self):
+        """Test LTX 2 ignores irrelevant parameters."""
+        result = calculate_credits("ltx-2", {
+            "num_inference_steps": 30,
+            "guidance_scale": 7
+        })
+        assert result == 1  # Fixed price regardless of params
+
+    def test_hailuo_2_3_pro_default_params(self):
+        """Test Hailuo 2.3 Pro with default 5-second duration."""
+        result = calculate_credits("hailuo-2.3-pro", {"duration": "5"})
+        assert result == 4
+
+    def test_hailuo_2_3_pro_no_duration(self):
+        """Test Hailuo 2.3 Pro with no duration specified uses base credits."""
+        result = calculate_credits("hailuo-2.3-pro", {})
+        assert result == 4  # Base credits
+
+    def test_nano_banana_pro_default_params(self):
+        """Test Nano Banana Pro with default 2K resolution."""
+        result = calculate_credits("nano-banana-pro", {"resolution": "2K"})
         assert result == 3
 
-    def test_wan_2_2_no_resolution(self):
-        """Test WAN 2.2 with no resolution specified uses base credits."""
-        result = calculate_credits("wan-2.2", {})
-        assert result == 3  # Base credits
-
-    def test_flux_1_1_pro_ultra_default_params(self):
-        """Test FLUX 1.1 Pro Ultra (fixed price, no modifiers)."""
-        result = calculate_credits("flux-1.1-pro-ultra", {})
-        assert result == 2
-
-    def test_flux_1_1_pro_ultra_with_irrelevant_params(self):
-        """Test FLUX 1.1 Pro Ultra ignores irrelevant parameters."""
-        result = calculate_credits("flux-1.1-pro-ultra", {
-            "aspect_ratio": "16:9",
-            "output_format": "jpg",
-            "raw": "false"
-        })
-        assert result == 2  # Fixed price regardless of params
+    def test_nano_banana_pro_no_resolution(self):
+        """Test Nano Banana Pro with no resolution specified uses base credits."""
+        result = calculate_credits("nano-banana-pro", {})
+        assert result == 2  # Base credits
 
 
 class TestCalculateCreditsParameterVariations:
     """Test all models with each valid parameter variation."""
 
-    # Kling 2.5 duration variations
-    def test_kling_2_5_duration_5_seconds(self):
-        """Test Kling 2.5 with 5-second duration."""
-        result = calculate_credits("kling-2.5", {"duration": "5"})
-        assert result == 10
-
-    def test_kling_2_5_duration_10_seconds(self):
-        """Test Kling 2.5 with 10-second duration."""
-        result = calculate_credits("kling-2.5", {"duration": "10"})
-        assert result == 20
-
     # VEO 3.1 duration variations
     def test_veo_3_1_duration_4_seconds(self):
         """Test VEO 3.1 with 4-second duration."""
         result = calculate_credits("veo-3.1", {"duration": "4"})
-        assert result == 50
+        assert result == 16
 
     def test_veo_3_1_duration_6_seconds(self):
         """Test VEO 3.1 with 6-second duration."""
         result = calculate_credits("veo-3.1", {"duration": "6"})
-        assert result == 75
+        assert result == 24
 
     def test_veo_3_1_duration_8_seconds(self):
         """Test VEO 3.1 with 8-second duration."""
         result = calculate_credits("veo-3.1", {"duration": "8"})
-        assert result == 100
+        assert result == 32
 
-    # Seedance 1 Pro resolution variations
-    def test_seedance_1_pro_resolution_480p(self):
-        """Test Seedance 1 Pro with 480p resolution."""
-        result = calculate_credits("seedance-1-pro", {"resolution": "480p"})
+    def test_veo_3_1_no_audio(self):
+        """Test VEO 3.1 with audio disabled (50% reduction)."""
+        result = calculate_credits("veo-3.1", {"duration": "8", "generate_audio": "false"})
+        assert result == 16  # 32 * 0.5 = 16
+
+    def test_veo_3_1_with_audio(self):
+        """Test VEO 3.1 with audio enabled (no multiplier applied)."""
+        result = calculate_credits("veo-3.1", {"duration": "8", "generate_audio": "true"})
+        assert result == 32  # No reduction for "true"
+
+    # Sora 2 duration variations
+    def test_sora_2_duration_4_seconds(self):
+        """Test Sora 2 with 4-second duration."""
+        result = calculate_credits("sora-2", {"duration": "4"})
+        assert result == 4
+
+    def test_sora_2_duration_8_seconds(self):
+        """Test Sora 2 with 8-second duration."""
+        result = calculate_credits("sora-2", {"duration": "8"})
+        assert result == 8
+
+    def test_sora_2_duration_12_seconds(self):
+        """Test Sora 2 with 12-second duration."""
+        result = calculate_credits("sora-2", {"duration": "12"})
+        assert result == 12
+
+    # Kling 2.6 duration variations
+    def test_kling_2_6_duration_5_seconds(self):
+        """Test Kling 2.6 with 5-second duration."""
+        result = calculate_credits("kling-2.6", {"duration": "5"})
+        assert result == 5
+
+    def test_kling_2_6_duration_10_seconds(self):
+        """Test Kling 2.6 with 10-second duration."""
+        result = calculate_credits("kling-2.6", {"duration": "10"})
         assert result == 10
 
-    def test_seedance_1_pro_resolution_720p(self):
-        """Test Seedance 1 Pro with 720p resolution."""
-        result = calculate_credits("seedance-1-pro", {"resolution": "720p"})
-        assert result == 15
+    # Hailuo 2.3 Pro duration variations
+    def test_hailuo_2_3_pro_duration_5_seconds(self):
+        """Test Hailuo 2.3 Pro with 5-second duration."""
+        result = calculate_credits("hailuo-2.3-pro", {"duration": "5"})
+        assert result == 4
 
-    def test_seedance_1_pro_resolution_1080p(self):
-        """Test Seedance 1 Pro with 1080p resolution."""
-        result = calculate_credits("seedance-1-pro", {"resolution": "1080p"})
-        assert result == 20
+    def test_hailuo_2_3_pro_duration_10_seconds(self):
+        """Test Hailuo 2.3 Pro with 10-second duration."""
+        result = calculate_credits("hailuo-2.3-pro", {"duration": "10"})
+        assert result == 8
 
-    # WAN 2.2 resolution variations
-    def test_wan_2_2_resolution_480p(self):
-        """Test WAN 2.2 with 480p resolution."""
-        result = calculate_credits("wan-2.2", {"resolution": "480p"})
+    # Nano Banana Pro resolution variations
+    def test_nano_banana_pro_resolution_1k(self):
+        """Test Nano Banana Pro with 1K resolution."""
+        result = calculate_credits("nano-banana-pro", {"resolution": "1K"})
+        assert result == 2
+
+    def test_nano_banana_pro_resolution_2k(self):
+        """Test Nano Banana Pro with 2K resolution."""
+        result = calculate_credits("nano-banana-pro", {"resolution": "2K"})
         assert result == 3
 
-    def test_wan_2_2_resolution_720p(self):
-        """Test WAN 2.2 with 720p resolution."""
-        result = calculate_credits("wan-2.2", {"resolution": "720p"})
-        assert result == 5
+    def test_nano_banana_pro_resolution_4k(self):
+        """Test Nano Banana Pro with 4K resolution."""
+        result = calculate_credits("nano-banana-pro", {"resolution": "4K"})
+        assert result == 4
 
 
 class TestCalculateCreditsErrorHandling:
@@ -256,72 +272,79 @@ class TestCalculateCreditsErrorHandling:
             calculate_credits("   ", {})
         assert "Unknown model:" in str(exc_info.value)
 
+    def test_old_model_ids_no_longer_supported(self):
+        """Test that old Replicate model IDs are no longer supported."""
+        old_models = ["kling-2.5", "seedance-1-pro", "wan-2.2", "flux-1.1-pro-ultra"]
+        for model_id in old_models:
+            with pytest.raises(ValueError) as exc_info:
+                calculate_credits(model_id, {})
+            assert "Unknown model:" in str(exc_info.value)
+
 
 class TestCalculateCreditsUnknownParamValues:
     """Test handling of unknown parameter values."""
 
     def test_unknown_duration_value_uses_base_credits(self):
         """Test that unknown duration value falls back to base credits."""
-        # Kling 2.5 only supports "5" and "10" for duration
-        result = calculate_credits("kling-2.5", {"duration": "15"})
-        assert result == 10  # Falls back to base credits
+        # Kling 2.6 only supports "5" and "10" for duration
+        result = calculate_credits("kling-2.6", {"duration": "15"})
+        assert result == 5  # Falls back to base credits
 
     def test_unknown_resolution_value_uses_base_credits(self):
         """Test that unknown resolution value falls back to base credits."""
-        # Seedance only supports 480p, 720p, 1080p
-        result = calculate_credits("seedance-1-pro", {"resolution": "4K"})
-        assert result == 10  # Falls back to base credits
+        # Nano Banana Pro only supports 1K, 2K, 4K
+        result = calculate_credits("nano-banana-pro", {"resolution": "8K"})
+        assert result == 2  # Falls back to base credits
 
     def test_numeric_duration_as_string(self):
         """Test that numeric duration values are properly converted."""
         result = calculate_credits("veo-3.1", {"duration": 8})  # Number, not string
-        assert result == 100  # Should still work via str conversion
+        assert result == 32  # Should still work via str conversion
 
     def test_numeric_resolution_as_string(self):
         """Test resolution with extra whitespace/formatting."""
-        result = calculate_credits("wan-2.2", {"resolution": " 720p "})
-        # This should use base credits since " 720p " != "720p"
-        assert result == 3  # Falls back to base credits
+        result = calculate_credits("nano-banana-pro", {"resolution": " 2K "})
+        # This should use base credits since " 2K " != "2K"
+        assert result == 2  # Falls back to base credits
 
 
 class TestCalculateCreditsEdgeCases:
     """Test edge cases and special scenarios."""
 
     def test_null_params(self):
-        """Test with None params dict (should use base)."""
-        # Pass empty dict instead of None as the function expects dict
-        result = calculate_credits("flux-1.1-pro-ultra", {})
-        assert result == 2
+        """Test with empty params dict."""
+        result = calculate_credits("ltx-2", {})
+        assert result == 1
 
     def test_empty_params(self):
         """Test with empty params dict."""
-        result = calculate_credits("kling-2.5", {})
-        assert result == 10  # Base credits
+        result = calculate_credits("kling-2.6", {})
+        assert result == 5  # Base credits
 
     def test_extra_irrelevant_params(self):
         """Test that extra parameters are ignored."""
-        result = calculate_credits("kling-2.5", {
+        result = calculate_credits("kling-2.6", {
             "duration": "5",
             "prompt": "A beautiful sunset",
-            "negative_prompt": "blur",
+            "cfg_scale": 7,
             "aspect_ratio": "16:9",
             "random_param": "value"
         })
-        assert result == 10
+        assert result == 5
 
     def test_param_value_none(self):
         """Test with param value explicitly set to None."""
-        result = calculate_credits("kling-2.5", {"duration": None})
-        assert result == 10  # Should use base credits
+        result = calculate_credits("kling-2.6", {"duration": None})
+        assert result == 5  # Should use base credits
 
     def test_param_value_empty_string(self):
         """Test with param value as empty string."""
-        result = calculate_credits("kling-2.5", {"duration": ""})
-        assert result == 10  # Empty string not in values, uses base
+        result = calculate_credits("kling-2.6", {"duration": ""})
+        assert result == 5  # Empty string not in values, uses base
 
     def test_result_is_integer(self):
         """Test that result is always an integer (rounded)."""
-        result = calculate_credits("kling-2.5", {"duration": "5"})
+        result = calculate_credits("kling-2.6", {"duration": "5"})
         assert isinstance(result, int)
 
     def test_result_is_non_negative(self):
@@ -355,65 +378,76 @@ class TestCalculateCreditsModifierTypes:
 
     def test_set_modifier_replaces_base(self):
         """Test that 'set' modifier replaces the base credits."""
-        # Kling 2.5 uses 'set' modifier
-        base = MODEL_CREDIT_PRICING["kling-2.5"]["base"]
-        result_5s = calculate_credits("kling-2.5", {"duration": "5"})
-        result_10s = calculate_credits("kling-2.5", {"duration": "10"})
+        # Kling 2.6 uses 'set' modifier
+        result_5s = calculate_credits("kling-2.6", {"duration": "5"})
+        result_10s = calculate_credits("kling-2.6", {"duration": "10"})
 
         # Set modifier should set credits to the modifier value
-        assert result_5s == 10  # Set to 10
-        assert result_10s == 20  # Set to 20
+        assert result_5s == 5  # Set to 5
+        assert result_10s == 10  # Set to 10
 
-    def test_all_current_models_use_set_type(self):
-        """Verify all current model modifiers use 'set' type."""
-        for model_id, config in MODEL_CREDIT_PRICING.items():
-            modifiers = config.get("modifiers", [])
-            for modifier in modifiers:
-                assert modifier.get("type") == "set", \
-                    f"Model {model_id} uses non-'set' modifier type"
+    def test_multiply_modifier_reduces_credits(self):
+        """Test that 'multiply' modifier adjusts the credits."""
+        # VEO 3.1 has a multiply modifier for generate_audio=false
+        result_with_audio = calculate_credits("veo-3.1", {"duration": "8", "generate_audio": "true"})
+        result_no_audio = calculate_credits("veo-3.1", {"duration": "8", "generate_audio": "false"})
+
+        assert result_with_audio == 32  # Full price
+        assert result_no_audio == 16  # 32 * 0.5 = 16
 
 
 class TestCalculateCreditsConsistency:
     """Test consistency between frontend and backend credit calculations."""
 
-    def test_kling_pricing_matches_config(self):
-        """Verify Kling 2.5 pricing matches MODEL_CREDIT_PRICING."""
-        config = MODEL_CREDIT_PRICING["kling-2.5"]
-        assert config["base"] == 10
-        modifiers = config.get("modifiers", [])
-        assert len(modifiers) == 1
-        assert modifiers[0]["param"] == "duration"
-        assert modifiers[0]["values"] == {"5": 10, "10": 20}
-
     def test_veo_pricing_matches_config(self):
         """Verify VEO 3.1 pricing matches MODEL_CREDIT_PRICING."""
         config = MODEL_CREDIT_PRICING["veo-3.1"]
-        assert config["base"] == 100
+        assert config["base"] == 32
+        modifiers = config.get("modifiers", [])
+        assert len(modifiers) == 2
+        assert modifiers[0]["param"] == "duration"
+        assert modifiers[0]["values"] == {"4": 16, "6": 24, "8": 32}
+        assert modifiers[1]["param"] == "generate_audio"
+        assert modifiers[1]["values"] == {"false": 0.5}
+
+    def test_sora_pricing_matches_config(self):
+        """Verify Sora 2 pricing matches MODEL_CREDIT_PRICING."""
+        config = MODEL_CREDIT_PRICING["sora-2"]
+        assert config["base"] == 4
         modifiers = config.get("modifiers", [])
         assert len(modifiers) == 1
         assert modifiers[0]["param"] == "duration"
-        assert modifiers[0]["values"] == {"4": 50, "6": 75, "8": 100}
+        assert modifiers[0]["values"] == {"4": 4, "8": 8, "12": 12}
 
-    def test_seedance_pricing_matches_config(self):
-        """Verify Seedance 1 Pro pricing matches MODEL_CREDIT_PRICING."""
-        config = MODEL_CREDIT_PRICING["seedance-1-pro"]
-        assert config["base"] == 10
+    def test_kling_pricing_matches_config(self):
+        """Verify Kling 2.6 pricing matches MODEL_CREDIT_PRICING."""
+        config = MODEL_CREDIT_PRICING["kling-2.6"]
+        assert config["base"] == 5
         modifiers = config.get("modifiers", [])
         assert len(modifiers) == 1
-        assert modifiers[0]["param"] == "resolution"
-        assert modifiers[0]["values"] == {"480p": 10, "720p": 15, "1080p": 20}
+        assert modifiers[0]["param"] == "duration"
+        assert modifiers[0]["values"] == {"5": 5, "10": 10}
 
-    def test_wan_pricing_matches_config(self):
-        """Verify WAN 2.2 pricing matches MODEL_CREDIT_PRICING."""
-        config = MODEL_CREDIT_PRICING["wan-2.2"]
-        assert config["base"] == 3
-        modifiers = config.get("modifiers", [])
-        assert len(modifiers) == 1
-        assert modifiers[0]["param"] == "resolution"
-        assert modifiers[0]["values"] == {"480p": 3, "720p": 5}
-
-    def test_flux_pricing_matches_config(self):
-        """Verify FLUX 1.1 Pro Ultra pricing matches MODEL_CREDIT_PRICING."""
-        config = MODEL_CREDIT_PRICING["flux-1.1-pro-ultra"]
-        assert config["base"] == 2
+    def test_ltx_pricing_matches_config(self):
+        """Verify LTX 2 pricing matches MODEL_CREDIT_PRICING."""
+        config = MODEL_CREDIT_PRICING["ltx-2"]
+        assert config["base"] == 1
         assert config.get("modifiers") is None  # No modifiers for fixed price
+
+    def test_hailuo_pricing_matches_config(self):
+        """Verify Hailuo 2.3 Pro pricing matches MODEL_CREDIT_PRICING."""
+        config = MODEL_CREDIT_PRICING["hailuo-2.3-pro"]
+        assert config["base"] == 4
+        modifiers = config.get("modifiers", [])
+        assert len(modifiers) == 1
+        assert modifiers[0]["param"] == "duration"
+        assert modifiers[0]["values"] == {"5": 4, "10": 8}
+
+    def test_nano_banana_pricing_matches_config(self):
+        """Verify Nano Banana Pro pricing matches MODEL_CREDIT_PRICING."""
+        config = MODEL_CREDIT_PRICING["nano-banana-pro"]
+        assert config["base"] == 2
+        modifiers = config.get("modifiers", [])
+        assert len(modifiers) == 1
+        assert modifiers[0]["param"] == "resolution"
+        assert modifiers[0]["values"] == {"1K": 2, "2K": 3, "4K": 4}

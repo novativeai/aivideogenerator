@@ -102,6 +102,28 @@ service cloud.firestore {
         // Only server can delete marketplace items
         allow delete: if false;
       }
+
+      // ============================================
+      // GENERATIONS SUBCOLLECTION (user's generation history)
+      // ============================================
+      match /generations/{generationId} {
+        // Users can read their own generations
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Only server can create/update/delete generations
+        allow create, update, delete: if false;
+      }
+
+      // ============================================
+      // SELLER BALANCE SUBCOLLECTION
+      // ============================================
+      match /seller_balance/{balanceId} {
+        // Users can read their own seller balance
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Only server can create/update/delete balance records
+        allow create, update, delete: if false;
+      }
     }
 
     // ============================================

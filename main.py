@@ -1135,6 +1135,24 @@ async def generate_media(request: Request, video_request: VideoRequest):
             'outputUrls': output_urls
         })
 
+        # Save to user's generations subcollection for history display
+        # Determine output type based on model configuration
+        is_image_model = "t2i" in model_config
+        output_type = "image" if is_image_model else "video"
+
+        # Save each output to the user's generations subcollection
+        for output_url in output_urls:
+            generation_ref = user_ref.collection('generations').document()
+            generation_ref.set({
+                'outputUrl': output_url,
+                'outputType': output_type,
+                'prompt': api_params.get('prompt', ''),
+                'modelId': video_request.model_id,
+                'status': 'completed',
+                'createdAt': firestore.SERVER_TIMESTAMP,
+                'transactionId': transaction_id
+            })
+
         logger.info(f"Generation completed for user {video_request.user_id}, transaction {transaction_id}. Outputs: {len(output_urls)}")
         return {"output_urls": output_urls}
 

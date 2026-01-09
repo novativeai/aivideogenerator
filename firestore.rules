@@ -185,8 +185,12 @@ service cloud.firestore {
             || (exists(/databases/$(database)/documents/users/$(request.auth.uid))
                 && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true));
 
-      // Only server/admin can create or delete
-      allow create, delete: if request.auth != null
+      // Users can create their own marketplace videos (sellerId must match their uid)
+      allow create: if request.auth != null
+        && request.resource.data.sellerId == request.auth.uid;
+
+      // Only admin can delete
+      allow delete: if request.auth != null
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
     }
@@ -204,8 +208,12 @@ service cloud.firestore {
             || (exists(/databases/$(database)/documents/users/$(request.auth.uid))
                 && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true));
 
-      // Only server/admin can create or delete
-      allow create, delete: if request.auth != null
+      // Users can create their own marketplace listings (sellerId must match their uid)
+      allow create: if request.auth != null
+        && request.resource.data.sellerId == request.auth.uid;
+
+      // Only admin can delete
+      allow delete: if request.auth != null
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
     }

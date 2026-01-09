@@ -1,6 +1,7 @@
 import os
 import logging
 import sys
+import traceback
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1138,12 +1139,49 @@ async def generate_media(request: Request, video_request: VideoRequest):
         return {"output_urls": output_urls}
 
     except Exception as e:
-        logger.error(f"fal.ai generation failed for user {video_request.user_id}. Refunding {credits_to_deduct} credits. Error: {e}")
+        # Extract detailed error information
+        error_type = type(e).__name__
+        error_message = str(e)
+        error_traceback = traceback.format_exc()
 
-        # Update transaction as failed
+        # Try to extract fal.ai specific error details if available
+        fal_error_details = {}
+        if hasattr(e, 'response'):
+            try:
+                fal_error_details['response'] = str(e.response)
+            except Exception:
+                pass
+        if hasattr(e, 'status_code'):
+            fal_error_details['status_code'] = e.status_code
+        if hasattr(e, 'body'):
+            try:
+                fal_error_details['body'] = str(e.body)
+            except Exception:
+                pass
+        if hasattr(e, 'message'):
+            fal_error_details['message'] = e.message
+
+        # Log comprehensive error details
+        logger.error(f"""
+========== FAL.AI GENERATION ERROR ==========
+User ID: {video_request.user_id}
+Model ID: {video_request.model_id}
+Transaction ID: {transaction_id}
+Credits to refund: {credits_to_deduct}
+Error Type: {error_type}
+Error Message: {error_message}
+Fal.ai Details: {json.dumps(fal_error_details) if fal_error_details else 'N/A'}
+API Params (sanitized): {json.dumps({k: v for k, v in api_params.items() if not (isinstance(v, str) and (v.startswith('data:') or len(v) > 200))})}
+Traceback:
+{error_traceback}
+=============================================""")
+
+        # Update transaction as failed with detailed error info
         transaction_ref.update({
             'status': 'failed_generation',
-            'error': str(e),
+            'error': error_message,
+            'errorType': error_type,
+            'errorDetails': fal_error_details if fal_error_details else None,
             'failedAt': firestore.SERVER_TIMESTAMP,
             'refundAttempted': True
         })
@@ -1181,7 +1219,20 @@ async def generate_media(request: Request, video_request: VideoRequest):
             except Exception as log_e:
                 logger.critical(f"CRITICAL: Failed to log refund failure for user {video_request.user_id}: {log_e}")
 
-        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
+        # Construct user-friendly error message with details
+        user_error_message = f"Generation failed ({error_type}): {error_message}"
+
+        # Add specific hints for common fal.ai errors
+        if 'downstream_service' in error_message.lower():
+            user_error_message += " - The AI model service is temporarily unavailable. Please try again later."
+        elif 'file_download' in error_message.lower():
+            user_error_message += " - Failed to process the input image. Please ensure it is accessible."
+        elif 'timeout' in error_message.lower() or 'timed out' in error_message.lower():
+            user_error_message += " - The generation request timed out. Please try again."
+        elif 'rate' in error_message.lower() and 'limit' in error_message.lower():
+            user_error_message += " - Rate limit exceeded. Please wait a moment and try again."
+
+        raise HTTPException(status_code=500, detail=user_error_message)
 
 # ========================
 # === ADMIN ENDPOINTS ===

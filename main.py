@@ -861,7 +861,22 @@ async def paytrust_webhook(request: Request):
                     # Prevent double-processing
                     if purchase_data.get('status') == 'completed':
                         logger.info(f"Marketplace purchase {marketplace_purchase_id} already completed, skipping")
+                    elif purchase_data.get('status') == 'failed':
+                        logger.warning(f"Marketplace purchase {marketplace_purchase_id} already failed, skipping")
                     else:
+                        # SECURITY: Verify webhook amount matches expected purchase amount
+                        expected_amount = purchase_data.get('price', 0)
+                        webhook_amount = amount
+                        if webhook_amount and expected_amount and abs(float(webhook_amount) - float(expected_amount)) > 0.01:
+                            logger.error(f"Amount mismatch for purchase {marketplace_purchase_id}: expected {expected_amount}, got {webhook_amount}")
+                            purchase_ref.update({
+                                "status": "amount_mismatch",
+                                "expectedAmount": expected_amount,
+                                "receivedAmount": webhook_amount,
+                                "failedAt": firestore.SERVER_TIMESTAMP
+                            })
+                            return {"status": "error", "message": "Amount mismatch"}
+
                         seller_id_from_purchase = purchase_data.get('sellerId')
                         seller_earnings = purchase_data.get('sellerEarnings', 0)
                         product_title = purchase_data.get('title', 'Unknown Product')
@@ -2343,15 +2358,27 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
 
     product_data = product_doc.to_dict()
 
+    # SECURITY: Use verified data from database, NOT client-provided data
+    verified_price = product_data.get('price')
+    verified_seller_id = product_data.get('sellerId')
+    verified_seller_name = product_data.get('sellerName', '')
+    verified_video_url = product_data.get('videoUrl')
+    verified_thumbnail_url = product_data.get('thumbnailUrl')
+    verified_title = product_data.get('title', '')
+
+    # Validate price exists
+    if not verified_price or verified_price <= 0:
+        raise HTTPException(status_code=400, detail="Invalid product price.")
+
     # Prevent self-purchase
-    if product_data.get('sellerId') == user_id:
+    if verified_seller_id == user_id:
         raise HTTPException(status_code=400, detail="Cannot purchase your own product.")
 
     # Check if product is still available
     if product_data.get('status') == 'sold':
         raise HTTPException(status_code=400, detail="This product has already been sold.")
 
-    # Create pending marketplace purchase record
+    # Create pending marketplace purchase record using VERIFIED database data
     purchase_ref = db.collection('marketplace_purchases').document()
     purchase_id = purchase_ref.id
 
@@ -2359,15 +2386,15 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
         "buyerId": user_id,
         "buyerEmail": user_data.get("email"),
         "buyerName": user_data.get("name", ""),
-        "sellerId": purchase_request.sellerId,
-        "sellerName": purchase_request.sellerName,
+        "sellerId": verified_seller_id,  # From database, not client
+        "sellerName": verified_seller_name,  # From database, not client
         "productId": purchase_request.productId,
-        "title": purchase_request.title,
-        "videoUrl": purchase_request.videoUrl,
-        "thumbnailUrl": purchase_request.thumbnailUrl,
-        "price": purchase_request.price,
-        "platformFee": round(purchase_request.price * 0.15, 2),  # 15% platform fee
-        "sellerEarnings": round(purchase_request.price * 0.85, 2),  # 85% to seller
+        "title": verified_title,  # From database, not client
+        "videoUrl": verified_video_url,  # From database, not client
+        "thumbnailUrl": verified_thumbnail_url,  # From database, not client
+        "price": verified_price,  # From database, not client
+        "platformFee": round(verified_price * 0.15, 2),  # 15% platform fee
+        "sellerEarnings": round(verified_price * 0.85, 2),  # 85% to seller
         "status": "pending",
         "createdAt": firestore.SERVER_TIMESTAMP
     })
@@ -2390,12 +2417,12 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
 
     payload = {
         "paymentType": "DEPOSIT",
-        "amount": purchase_request.price,
+        "amount": verified_price,  # Use verified price from database
         "currency": "EUR",
         "returnUrl": f"{frontend_url}/marketplace/purchase/success?purchase_id={purchase_id}",
         "errorUrl": f"{frontend_url}/marketplace/purchase/cancel?purchase_id={purchase_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
-        "referenceId": f"marketplace_purchase_id={purchase_id};user_id={user_id};seller_id={purchase_request.sellerId};product_id={purchase_request.productId}",
+        "referenceId": f"marketplace_purchase_id={purchase_id};user_id={user_id};seller_id={verified_seller_id};product_id={purchase_request.productId}",
         "customer": {
             "referenceId": user_id,
             "firstName": user_data.get("name", "").split()[0] if user_data.get("name") else "User",

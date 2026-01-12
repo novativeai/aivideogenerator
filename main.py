@@ -167,6 +167,16 @@ class SubscriptionRequest(BaseModel):
 class PortalRequest(BaseModel):
     userId: str = Field(..., min_length=1, max_length=128)
 
+class MarketplacePurchaseRequest(BaseModel):
+    userId: str = Field(..., min_length=1, max_length=128)
+    productId: str = Field(..., min_length=1, max_length=128)
+    title: str = Field(..., min_length=1, max_length=200)
+    videoUrl: str = Field(..., min_length=1, max_length=2000)
+    thumbnailUrl: str | None = Field(None, max_length=2000)
+    price: float = Field(..., gt=0, le=10000, description="Price in EUR")
+    sellerName: str = Field(..., min_length=1, max_length=100)
+    sellerId: str = Field(..., min_length=1, max_length=128)
+
 class AdminUserCreateRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
@@ -733,7 +743,10 @@ async def paytrust_webhook(request: Request):
         payment_doc_id = metadata.get("payment_id")
         subscription_doc_id = metadata.get("subscription_id")
         price_id = metadata.get("price_id")
-        
+        marketplace_purchase_id = metadata.get("marketplace_purchase_id")
+        seller_id = metadata.get("seller_id")
+        product_id = metadata.get("product_id")
+
         logger.debug(f"Extracted webhook metadata", extra={"metadata": metadata})
 
         if not user_id:
@@ -834,8 +847,71 @@ async def paytrust_webhook(request: Request):
                     })
                 else:
                     logger.error(f"Payment document not found: {payment_doc_id}")
+
+            elif marketplace_purchase_id:
+                # This is a marketplace purchase
+                logger.info(f"Marketplace purchase detected: {marketplace_purchase_id}")
+
+                purchase_ref = db.collection('marketplace_purchases').document(marketplace_purchase_id)
+                purchase_doc = purchase_ref.get()
+
+                if purchase_doc.exists:
+                    purchase_data = purchase_doc.to_dict()
+
+                    # Prevent double-processing
+                    if purchase_data.get('status') == 'completed':
+                        logger.info(f"Marketplace purchase {marketplace_purchase_id} already completed, skipping")
+                    else:
+                        seller_id_from_purchase = purchase_data.get('sellerId')
+                        seller_earnings = purchase_data.get('sellerEarnings', 0)
+                        product_title = purchase_data.get('title', 'Unknown Product')
+                        buyer_id = purchase_data.get('buyerId')
+
+                        # 1. Update purchase status to completed
+                        purchase_ref.update({
+                            "status": "completed",
+                            "completedAt": firestore.SERVER_TIMESTAMP,
+                            "paytrustTransactionId": transaction_id
+                        })
+
+                        # 2. Credit seller's balance
+                        seller_ref = db.collection('users').document(seller_id_from_purchase)
+                        seller_doc = seller_ref.get()
+                        if seller_doc.exists:
+                            seller_ref.update({
+                                "sellerBalance": firestore.Increment(seller_earnings)
+                            })
+                            logger.info(f"Credited seller {seller_id_from_purchase} with €{seller_earnings}")
+
+                            # 3. Create transaction record for seller
+                            seller_ref.collection('seller_transactions').add({
+                                "type": "sale",
+                                "amount": seller_earnings,
+                                "productId": purchase_data.get('productId'),
+                                "productTitle": product_title,
+                                "buyerId": buyer_id,
+                                "purchaseId": marketplace_purchase_id,
+                                "createdAt": firestore.SERVER_TIMESTAMP
+                            })
+
+                        # 4. Update product sales count
+                        product_ref = db.collection('marketplace').document(purchase_data.get('productId'))
+                        product_doc_check = product_ref.get()
+                        if product_doc_check.exists:
+                            product_ref.update({
+                                "salesCount": firestore.Increment(1)
+                            })
+
+                        logger.info(f"Marketplace purchase {marketplace_purchase_id} completed successfully", extra={
+                            "buyer_id": buyer_id,
+                            "seller_id": seller_id_from_purchase,
+                            "seller_earnings": seller_earnings
+                        })
+                else:
+                    logger.error(f"Marketplace purchase document not found: {marketplace_purchase_id}")
+
             else:
-                logger.warning(f"No payment_id or subscription_id found in metadata for user {user_id}")
+                logger.warning(f"No payment_id, subscription_id, or marketplace_purchase_id found in metadata for user {user_id}")
         
         elif state == "FAIL" or state == "FAILED" or state == "DECLINED":
             logger.warning(f"Payment FAILED or DECLINED for user {user_id}")
@@ -860,6 +936,16 @@ async def paytrust_webhook(request: Request):
                         "failedAt": firestore.SERVER_TIMESTAMP
                     })
                     logger.info(f"Updated subscription status to failed: {subscription_doc_id}")
+
+            if marketplace_purchase_id:
+                purchase_ref = db.collection('marketplace_purchases').document(marketplace_purchase_id)
+                purchase_doc = purchase_ref.get()
+                if purchase_doc.exists:
+                    purchase_ref.update({
+                        "status": "failed",
+                        "failedAt": firestore.SERVER_TIMESTAMP
+                    })
+                    logger.info(f"Updated marketplace purchase status to failed: {marketplace_purchase_id}")
 
             logger.info(f"Payment failed for user {user_id}")
 
@@ -2211,6 +2297,244 @@ async def send_payout_status_email(user_id: str, status: str, amount: float, pay
     except Exception as e:
         logger.error(f"Failed to send payout {status} email to user {user_id}: {e}")
         return False
+
+
+# --- Marketplace Purchase Endpoints ---
+
+@app.post("/marketplace/create-purchase-payment")
+@limiter.limit("10/minute")
+async def create_marketplace_purchase_payment(request: Request, purchase_request: MarketplacePurchaseRequest, authorization: str = Header(...)):
+    """Create a payment for marketplace product purchase using PayTrust"""
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized.")
+
+    # Verify user authentication
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+    try:
+        token = authorization.split("Bearer ")[1]
+        decoded_token = auth.verify_id_token(token)
+        token_user_id = decoded_token['uid']
+
+        # Ensure the token user matches the request user
+        if token_user_id != purchase_request.userId:
+            raise HTTPException(status_code=403, detail="User ID mismatch")
+
+    except auth.InvalidIdTokenError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+
+    user_id = purchase_request.userId
+    logger.info(f"Marketplace Purchase Request - User: {user_id}, Product: {purchase_request.productId}")
+
+    # Verify buyer exists
+    user_ref = db.collection('users').document(user_id)
+    user_doc = user_ref.get()
+    if not user_doc.exists:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    user_data = user_doc.to_dict()
+
+    # Verify product exists in marketplace
+    product_ref = db.collection('marketplace').document(purchase_request.productId)
+    product_doc = product_ref.get()
+    if not product_doc.exists:
+        raise HTTPException(status_code=404, detail="Product not found in marketplace.")
+
+    product_data = product_doc.to_dict()
+
+    # Prevent self-purchase
+    if product_data.get('sellerId') == user_id:
+        raise HTTPException(status_code=400, detail="Cannot purchase your own product.")
+
+    # Check if product is still available
+    if product_data.get('status') == 'sold':
+        raise HTTPException(status_code=400, detail="This product has already been sold.")
+
+    # Create pending marketplace purchase record
+    purchase_ref = db.collection('marketplace_purchases').document()
+    purchase_id = purchase_ref.id
+
+    purchase_ref.set({
+        "buyerId": user_id,
+        "buyerEmail": user_data.get("email"),
+        "buyerName": user_data.get("name", ""),
+        "sellerId": purchase_request.sellerId,
+        "sellerName": purchase_request.sellerName,
+        "productId": purchase_request.productId,
+        "title": purchase_request.title,
+        "videoUrl": purchase_request.videoUrl,
+        "thumbnailUrl": purchase_request.thumbnailUrl,
+        "price": purchase_request.price,
+        "platformFee": round(purchase_request.price * 0.15, 2),  # 15% platform fee
+        "sellerEarnings": round(purchase_request.price * 0.85, 2),  # 85% to seller
+        "status": "pending",
+        "createdAt": firestore.SERVER_TIMESTAMP
+    })
+
+    logger.info(f"Marketplace purchase record created: {purchase_id}", extra={
+        "user_id": user_id,
+        "product_id": purchase_request.productId,
+        "price": purchase_request.price
+    })
+
+    # Prepare PayTrust payment request
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "authorization": f"Bearer {PAYTRUST_API_KEY}"
+    }
+
+    backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
+    frontend_url = "https://ai-video-generator-mvp.netlify.app"
+
+    payload = {
+        "paymentType": "DEPOSIT",
+        "amount": purchase_request.price,
+        "currency": "EUR",
+        "returnUrl": f"{frontend_url}/marketplace/purchase/success?purchase_id={purchase_id}",
+        "errorUrl": f"{frontend_url}/marketplace/purchase/cancel?purchase_id={purchase_id}",
+        "webhookUrl": f"{backend_url}/paytrust-webhook",
+        "referenceId": f"marketplace_purchase_id={purchase_id};user_id={user_id};seller_id={purchase_request.sellerId};product_id={purchase_request.productId}",
+        "customer": {
+            "referenceId": user_id,
+            "firstName": user_data.get("name", "").split()[0] if user_data.get("name") else "User",
+            "lastName": user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer",
+            "email": user_data.get("email", "customer@example.com")
+        }
+    }
+
+    logger.debug(f"PayTrust API request for marketplace purchase {purchase_id}")
+
+    try:
+        response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
+
+        logger.debug(f"PayTrust response status: {response.status_code} for marketplace purchase {purchase_id}")
+
+        response.raise_for_status()
+        payment_data = response.json()
+
+        logger.debug(f"PayTrust payment data received for marketplace purchase {purchase_id}")
+
+        # PayTrust wraps response in a "result" object
+        result = payment_data.get("result", payment_data)
+
+        # Update purchase record with PayTrust payment ID
+        purchase_ref.update({
+            "paytrustPaymentId": result.get("id"),
+            "paytrustTransactionId": result.get("transactionId")
+        })
+
+        # Get redirect URL from result object
+        redirect_url = result.get("redirectUrl") or result.get("redirect_url") or result.get("paymentUrl")
+
+        if not redirect_url:
+            logger.error(f"No redirect URL in PayTrust response for marketplace purchase {purchase_id}")
+            raise HTTPException(status_code=500, detail=f"PayTrust did not return a payment URL. Response: {payment_data}")
+
+        logger.info(f"Marketplace payment URL obtained for purchase {purchase_id}")
+        return {"paymentUrl": redirect_url, "purchaseId": purchase_id}
+
+    except requests.exceptions.HTTPError as e:
+        error_detail = f"PayTrust API Error ({e.response.status_code}): {e.response.text}"
+        logger.error(error_detail, extra={"purchase_id": purchase_id})
+        # Update purchase status to failed
+        purchase_ref.update({"status": "payment_failed", "error": error_detail})
+        raise HTTPException(status_code=500, detail=error_detail)
+    except requests.exceptions.RequestException as e:
+        error_detail = f"Request failed: {str(e)}"
+        logger.error(error_detail, extra={"purchase_id": purchase_id})
+        purchase_ref.update({"status": "payment_failed", "error": error_detail})
+        raise HTTPException(status_code=500, detail=error_detail)
+    except Exception as e:
+        error_detail = f"Unexpected error: {str(e)}"
+        logger.error(error_detail, extra={"purchase_id": purchase_id})
+        purchase_ref.update({"status": "payment_failed", "error": error_detail})
+        raise HTTPException(status_code=500, detail=error_detail)
+
+
+@app.get("/marketplace/purchase/{purchase_id}")
+@limiter.limit("30/minute")
+async def get_marketplace_purchase(request: Request, purchase_id: str, authorization: str = Header(...)):
+    """Get marketplace purchase details (for success/cancel pages)"""
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized.")
+
+    # Verify user authentication
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+    try:
+        token = authorization.split("Bearer ")[1]
+        decoded_token = auth.verify_id_token(token)
+        user_id = decoded_token['uid']
+    except auth.InvalidIdTokenError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+
+    purchase_ref = db.collection('marketplace_purchases').document(purchase_id)
+    purchase_doc = purchase_ref.get()
+
+    if not purchase_doc.exists:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+
+    purchase_data = purchase_doc.to_dict()
+
+    # Only buyer or seller can view purchase details
+    if purchase_data.get('buyerId') != user_id and purchase_data.get('sellerId') != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return {
+        "id": purchase_id,
+        "status": purchase_data.get("status"),
+        "title": purchase_data.get("title"),
+        "price": purchase_data.get("price"),
+        "videoUrl": purchase_data.get("videoUrl") if purchase_data.get("status") == "completed" else None,
+        "createdAt": purchase_data.get("createdAt"),
+        "completedAt": purchase_data.get("completedAt")
+    }
+
+
+@app.get("/marketplace/my-purchases")
+@limiter.limit("30/minute")
+async def get_my_marketplace_purchases(request: Request, authorization: str = Header(...)):
+    """Get all marketplace purchases for the authenticated user"""
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized.")
+
+    # Verify user authentication
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+    try:
+        token = authorization.split("Bearer ")[1]
+        decoded_token = auth.verify_id_token(token)
+        user_id = decoded_token['uid']
+    except auth.InvalidIdTokenError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+
+    try:
+        # Query purchases where user is the buyer
+        purchases_query = db.collection('marketplace_purchases').where('buyerId', '==', user_id).where('status', '==', 'completed').order_by('completedAt', direction=firestore.Query.DESCENDING).limit(50)
+        purchases = purchases_query.stream()
+
+        purchase_list = []
+        for doc in purchases:
+            data = doc.to_dict()
+            purchase_list.append({
+                "id": doc.id,
+                "title": data.get("title"),
+                "videoUrl": data.get("videoUrl"),
+                "thumbnailUrl": data.get("thumbnailUrl"),
+                "price": data.get("price"),
+                "sellerName": data.get("sellerName"),
+                "completedAt": data.get("completedAt")
+            })
+
+        return {"purchases": purchase_list}
+
+    except Exception as e:
+        logger.error(f"Failed to get purchases for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get purchases: {str(e)}")
 
 
 # --- Main execution block ---

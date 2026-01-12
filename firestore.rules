@@ -33,8 +33,8 @@ service cloud.firestore {
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['credits']))
         // CRITICAL: Prevent clients from modifying isAdmin
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['isAdmin']))
-        // CRITICAL: Prevent clients from modifying sellerProfile.pendingBalance, sellerProfile.withdrawnBalance
-        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['sellerProfile.pendingBalance', 'sellerProfile.withdrawnBalance']));
+        // CRITICAL: Prevent clients from modifying seller balance fields
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['sellerBalance', 'sellerProfile.pendingBalance', 'sellerProfile.withdrawnBalance']));
 
       // Users cannot delete their own documents (only admin/server can)
       allow delete: if false;

@@ -909,8 +909,8 @@ async def paytrust_webhook(request: Request):
                                 "createdAt": firestore.SERVER_TIMESTAMP
                             })
 
-                        # 4. Update product sales count
-                        product_ref = db.collection('marketplace').document(purchase_data.get('productId'))
+                        # 4. Update product sales count in marketplace_listings
+                        product_ref = db.collection('marketplace_listings').document(purchase_data.get('productId'))
                         product_doc_check = product_ref.get()
                         if product_doc_check.exists:
                             product_ref.update({
@@ -2350,8 +2350,8 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
 
     user_data = user_doc.to_dict()
 
-    # Verify product exists in marketplace
-    product_ref = db.collection('marketplace').document(purchase_request.productId)
+    # Verify product exists in marketplace (uses marketplace_listings collection)
+    product_ref = db.collection('marketplace_listings').document(purchase_request.productId)
     product_doc = product_ref.get()
     if not product_doc.exists:
         raise HTTPException(status_code=404, detail="Product not found in marketplace.")

@@ -917,6 +917,21 @@ async def paytrust_webhook(request: Request):
                                 "salesCount": firestore.Increment(1)
                             })
 
+                        # 5. Create purchased_videos record for buyer (for frontend display)
+                        buyer_ref = db.collection('users').document(buyer_id)
+                        buyer_ref.collection('purchased_videos').add({
+                            "productId": purchase_data.get('productId'),
+                            "title": product_title,
+                            "videoUrl": purchase_data.get('videoUrl'),
+                            "thumbnailUrl": purchase_data.get('thumbnailUrl'),
+                            "price": purchase_data.get('price'),
+                            "sellerName": purchase_data.get('sellerName'),
+                            "sellerId": seller_id_from_purchase,
+                            "purchaseId": marketplace_purchase_id,
+                            "purchasedAt": firestore.SERVER_TIMESTAMP
+                        })
+                        logger.info(f"Created purchased_videos record for buyer {buyer_id}")
+
                         logger.info(f"Marketplace purchase {marketplace_purchase_id} completed successfully", extra={
                             "buyer_id": buyer_id,
                             "seller_id": seller_id_from_purchase,

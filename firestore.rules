@@ -276,6 +276,50 @@ service cloud.firestore {
     }
 
     // ============================================
+    // MARKETPLACE COLLECTION (products)
+    // ============================================
+    match /marketplace/{productId} {
+      // Anyone can read marketplace products (public)
+      allow read: if true;
+
+      // Only admins or the product owner can update
+      allow update: if request.auth != null
+        && (resource.data.sellerId == request.auth.uid
+            || (exists(/databases/$(database)/documents/users/$(request.auth.uid))
+                && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true));
+
+      // Users can create their own marketplace products (sellerId must match their uid)
+      allow create: if request.auth != null
+        && request.resource.data.sellerId == request.auth.uid;
+
+      // Only admin can delete
+      allow delete: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    // ============================================
+    // MARKETPLACE PURCHASES COLLECTION
+    // ============================================
+    match /marketplace_purchases/{purchaseId} {
+      // Buyers can read their own purchases
+      allow read: if request.auth != null
+        && resource.data.buyerId == request.auth.uid;
+
+      // Sellers can read purchases of their products
+      allow read: if request.auth != null
+        && resource.data.sellerId == request.auth.uid;
+
+      // Admins can read all purchases
+      allow read: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+
+      // Only server can create/update/delete (via webhook)
+      allow create, update, delete: if false;
+    }
+
+    // ============================================
     // DEFAULT: Deny all other access
     // ============================================
     match /{document=**} {

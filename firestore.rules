@@ -62,19 +62,60 @@ service cloud.firestore {
       }
 
       // ============================================
-      // WITHDRAWAL REQUESTS SUBCOLLECTION (for sellers)
+      // PAYOUT REQUESTS SUBCOLLECTION (for sellers)
       // ============================================
-      match /withdrawalRequests/{requestId} {
-        // Users can read their own withdrawal requests
+      match /payout_requests/{requestId} {
+        // Users can read their own payout requests
         allow read: if request.auth != null && request.auth.uid == userId;
 
-        // Users can create withdrawal requests (with restrictions)
+        // Users can create payout requests (with restrictions)
         allow create: if request.auth != null
           && request.auth.uid == userId
           && request.resource.data.status == 'pending'
           && request.resource.data.amount > 0;
 
-        // Only server can update/delete withdrawal requests
+        // Only server can update/delete payout requests
+        allow update, delete: if false;
+      }
+
+      // ============================================
+      // SELLER PROFILE SUBCOLLECTION
+      // ============================================
+      match /seller_profile/{profileId} {
+        // Users can read their own seller profile
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Users can create/update their own seller profile
+        allow create, update: if request.auth != null && request.auth.uid == userId;
+
+        // Only server can delete
+        allow delete: if false;
+      }
+
+      // ============================================
+      // SELLER TRANSACTIONS SUBCOLLECTION
+      // ============================================
+      match /seller_transactions/{transactionId} {
+        // Users can read their own seller transactions
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Only server can create/update/delete
+        allow create, update, delete: if false;
+      }
+
+      // ============================================
+      // STUDENT VERIFICATION SUBCOLLECTION
+      // ============================================
+      match /studentVerification/{docId} {
+        // Users can read their own student verification
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Users can create their own student verification (pending admin approval)
+        allow create: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.verificationStatus == 'pending';
+
+        // Only server can update/delete (admin approval flow)
         allow update, delete: if false;
       }
 
@@ -124,6 +165,22 @@ service cloud.firestore {
         // Only server can create/update/delete balance records
         allow create, update, delete: if false;
       }
+    }
+
+    // ============================================
+    // CONTACTS COLLECTION (contact form submissions)
+    // ============================================
+    match /contacts/{contactId} {
+      // Only admins can read contact submissions
+      allow read: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+
+      // Anyone (authenticated or not) can create contact submissions
+      allow create: if true;
+
+      // Only server can update/delete
+      allow update, delete: if false;
     }
 
     // ============================================

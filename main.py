@@ -3,14 +3,14 @@ import logging
 import sys
 import traceback
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, validator, EmailStr, Field
 import re
 import fal_client
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import base64
 import json
 import io
@@ -901,13 +901,17 @@ async def paytrust_webhook(request: Request):
                             "paytrustTransactionId": transaction_id
                         })
 
-                        # 2. Credit seller's balance
+                        # 2. Credit seller's balance (in seller_balance subcollection)
                         seller_ref = db.collection('users').document(seller_id_from_purchase)
                         seller_doc = seller_ref.get()
                         if seller_doc.exists:
-                            seller_ref.update({
-                                "sellerBalance": firestore.Increment(seller_earnings)
-                            })
+                            # Update seller_balance/current with proper balance fields
+                            balance_ref = seller_ref.collection('seller_balance').document('current')
+                            balance_ref.set({
+                                'totalEarned': firestore.Increment(seller_earnings),
+                                'availableBalance': firestore.Increment(seller_earnings),
+                                'lastTransactionDate': firestore.SERVER_TIMESTAMP
+                            }, merge=True)
                             logger.info(f"Credited seller {seller_id_from_purchase} with €{seller_earnings}")
 
                             # 3. Create transaction record for seller
@@ -1652,28 +1656,29 @@ async def get_pending_payouts(request: Request):
     try:
         payouts = []
 
-        # Query all users who are sellers
-        sellers_query = db.collection('users').where('isSeller', '==', True).stream()
+        # Query all users collection
+        users_query = db.collection('users').stream()
 
-        for seller_doc in sellers_query:
-            user_id = seller_doc.id
-            # Get pending withdrawal requests for this seller
-            withdrawals = db.collection('users').document(user_id).collection('withdrawalRequests').where('status', '==', 'pending').stream()
+        for user_doc in users_query:
+            user_id = user_doc.id
+            # Get pending payout requests for this user
+            payout_requests = db.collection('users').document(user_id).collection('payout_requests').where('status', '==', 'pending').stream()
 
-            for withdrawal_doc in withdrawals:
-                withdrawal_data = withdrawal_doc.to_dict()
+            for payout_doc in payout_requests:
+                payout_data = payout_doc.to_dict()
                 payouts.append({
-                    'id': withdrawal_doc.id,
+                    'id': payout_doc.id,
                     'userId': user_id,
-                    'amount': withdrawal_data.get('amount', 0),
-                    'paypalEmail': withdrawal_data.get('paypalEmail', ''),
-                    'status': withdrawal_data.get('status', 'pending'),
-                    'createdAt': withdrawal_data.get('createdAt'),
-                    'docPath': f"users/{user_id}/withdrawalRequests/{withdrawal_doc.id}"
+                    'userEmail': payout_data.get('userEmail', ''),
+                    'amount': payout_data.get('amount', 0),
+                    'bankDetails': payout_data.get('bankDetails', {}),
+                    'status': payout_data.get('status', 'pending'),
+                    'requestedAt': payout_data.get('requestedAt'),
+                    'docPath': f"users/{user_id}/payout_requests/{payout_doc.id}"
                 })
 
-        # Sort by creation date (newest first)
-        payouts.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
+        # Sort by request date (newest first)
+        payouts.sort(key=lambda x: x.get('requestedAt', ''), reverse=True)
 
         return {'payouts': payouts}
     except Exception as e:
@@ -1687,31 +1692,32 @@ async def get_payout_history(request: Request):
     try:
         payouts = []
 
-        # Query all users who are sellers
-        sellers_query = db.collection('users').where('isSeller', '==', True).stream()
+        # Query all users collection
+        users_query = db.collection('users').stream()
 
-        for seller_doc in sellers_query:
-            user_id = seller_doc.id
-            # Get non-pending withdrawal requests for this seller
-            withdrawals = db.collection('users').document(user_id).collection('withdrawalRequests').where('status', 'in', ['approved', 'rejected', 'completed']).stream()
+        for user_doc in users_query:
+            user_id = user_doc.id
+            # Get non-pending payout requests for this user
+            payout_requests = db.collection('users').document(user_id).collection('payout_requests').where('status', 'in', ['approved', 'rejected', 'completed']).stream()
 
-            for withdrawal_doc in withdrawals:
-                withdrawal_data = withdrawal_doc.to_dict()
+            for payout_doc in payout_requests:
+                payout_data = payout_doc.to_dict()
                 payouts.append({
-                    'id': withdrawal_doc.id,
+                    'id': payout_doc.id,
                     'userId': user_id,
-                    'amount': withdrawal_data.get('amount', 0),
-                    'paypalEmail': withdrawal_data.get('paypalEmail', ''),
-                    'status': withdrawal_data.get('status'),
-                    'createdAt': withdrawal_data.get('createdAt'),
-                    'approvedAt': withdrawal_data.get('approvedAt'),
-                    'rejectedAt': withdrawal_data.get('rejectedAt'),
-                    'completedAt': withdrawal_data.get('completedAt'),
-                    'docPath': f"users/{user_id}/withdrawalRequests/{withdrawal_doc.id}"
+                    'userEmail': payout_data.get('userEmail', ''),
+                    'amount': payout_data.get('amount', 0),
+                    'bankDetails': payout_data.get('bankDetails', {}),
+                    'status': payout_data.get('status'),
+                    'requestedAt': payout_data.get('requestedAt'),
+                    'approvedAt': payout_data.get('approvedAt'),
+                    'rejectedAt': payout_data.get('rejectedAt'),
+                    'completedAt': payout_data.get('completedAt'),
+                    'docPath': f"users/{user_id}/payout_requests/{payout_doc.id}"
                 })
 
         # Sort by most recent activity
-        payouts.sort(key=lambda x: x.get('approvedAt') or x.get('rejectedAt') or x.get('completedAt') or x.get('createdAt', ''), reverse=True)
+        payouts.sort(key=lambda x: x.get('approvedAt') or x.get('rejectedAt') or x.get('completedAt') or x.get('requestedAt', ''), reverse=True)
 
         return {'payouts': payouts}
     except Exception as e:
@@ -1727,7 +1733,7 @@ async def approve_payout(request: Request, payout_id: str, action_data: PayoutAc
     """Approve a payout request"""
     try:
         user_id = action_data.user_id
-        payout_ref = db.collection('users').document(user_id).collection('withdrawalRequests').document(payout_id)
+        payout_ref = db.collection('users').document(user_id).collection('payout_requests').document(payout_id)
         payout_doc = payout_ref.get()
 
         if not payout_doc.exists:
@@ -1744,10 +1750,11 @@ async def approve_payout(request: Request, payout_id: str, action_data: PayoutAc
         })
 
         amount = payout_data.get('amount', 0)
-        paypal_email = payout_data.get('paypalEmail', '')
+        bank_details = payout_data.get('bankDetails', {})
+        account_holder = bank_details.get('accountHolder', '')
 
         # Send email notification to seller
-        await send_payout_status_email(user_id, 'approved', amount, paypal_email)
+        await send_payout_status_email(user_id, 'approved', amount, account_holder)
 
         logger.info(f"Payout {payout_id} approved for user {user_id}")
         return {"message": "Payout approved successfully"}
@@ -1763,7 +1770,7 @@ async def reject_payout(request: Request, payout_id: str, action_data: PayoutAct
     """Reject a payout request and refund balance"""
     try:
         user_id = action_data.user_id
-        payout_ref = db.collection('users').document(user_id).collection('withdrawalRequests').document(payout_id)
+        payout_ref = db.collection('users').document(user_id).collection('payout_requests').document(payout_id)
         payout_doc = payout_ref.get()
 
         if not payout_doc.exists:
@@ -1781,11 +1788,12 @@ async def reject_payout(request: Request, payout_id: str, action_data: PayoutAct
             'rejectedAt': firestore.SERVER_TIMESTAMP
         })
 
-        # Refund the amount to seller's pending balance
-        user_ref = db.collection('users').document(user_id)
-        user_ref.update({
-            'sellerProfile.pendingBalance': firestore.Increment(amount)
-        })
+        # Refund the amount to seller's available balance (move from pending back to available)
+        balance_ref = db.collection('users').document(user_id).collection('seller_balance').document('current')
+        balance_ref.set({
+            'availableBalance': firestore.Increment(amount),
+            'pendingBalance': firestore.Increment(-amount)
+        }, merge=True)
 
         # Send email notification to seller
         await send_payout_status_email(user_id, 'rejected', amount)
@@ -1801,10 +1809,10 @@ async def reject_payout(request: Request, payout_id: str, action_data: PayoutAct
 @app.post("/admin/payouts/{payout_id}/complete", dependencies=[admin_dependency])
 @limiter.limit("10/minute")
 async def complete_payout(request: Request, payout_id: str, action_data: PayoutActionRequest):
-    """Mark a payout as completed (after PayPal transfer is done)"""
+    """Mark a payout as completed (after bank transfer is done)"""
     try:
         user_id = action_data.user_id
-        payout_ref = db.collection('users').document(user_id).collection('withdrawalRequests').document(payout_id)
+        payout_ref = db.collection('users').document(user_id).collection('payout_requests').document(payout_id)
         payout_doc = payout_ref.get()
 
         if not payout_doc.exists:
@@ -1822,11 +1830,12 @@ async def complete_payout(request: Request, payout_id: str, action_data: PayoutA
             'completedAt': firestore.SERVER_TIMESTAMP
         })
 
-        # Update seller's withdrawn balance
-        user_ref = db.collection('users').document(user_id)
-        user_ref.update({
-            'sellerProfile.withdrawnBalance': firestore.Increment(amount)
-        })
+        # Update seller's balance: move from pending to withdrawn
+        balance_ref = db.collection('users').document(user_id).collection('seller_balance').document('current')
+        balance_ref.set({
+            'pendingBalance': firestore.Increment(-amount),
+            'withdrawnBalance': firestore.Increment(amount)
+        }, merge=True)
 
         # Send email notification to seller
         await send_payout_status_email(user_id, 'completed', amount)
@@ -1839,19 +1848,437 @@ async def complete_payout(request: Request, payout_id: str, action_data: PayoutA
         logger.error(f"Failed to complete payout {payout_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to complete payout: {str(e)}")
 
-# --- Withdrawal Email Notification Endpoints ---
 
-class WithdrawalNotificationRequest(BaseModel):
-    requestId: str
-    amount: float
-    paypalEmail: EmailStr
+# --- Admin Marketplace Management Endpoints ---
 
-class SellerProfileUpdateRequest(BaseModel):
-    paypalEmail: EmailStr
+@app.get("/admin/marketplace/products", dependencies=[admin_dependency])
+@limiter.limit("30/minute")
+async def get_admin_marketplace_products(
+    request: Request,
+    status: Optional[str] = None,
+    seller_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0
+):
+    """Get all marketplace products with optional filtering"""
+    try:
+        products_ref = db.collection('marketplace_listings')
+
+        # Apply filters
+        if status:
+            products_ref = products_ref.where('status', '==', status)
+        if seller_id:
+            products_ref = products_ref.where('sellerId', '==', seller_id)
+
+        # Order by creation date and apply pagination
+        products_ref = products_ref.order_by('createdAt', direction=firestore.Query.DESCENDING)
+        products_ref = products_ref.offset(offset).limit(limit)
+
+        products = []
+        for doc in products_ref.stream():
+            product_data = doc.to_dict()
+            product_data['id'] = doc.id
+
+            # Get seller info
+            seller_id_val = product_data.get('sellerId')
+            if seller_id_val:
+                seller_doc = db.collection('users').document(seller_id_val).get()
+                if seller_doc.exists:
+                    seller_data = seller_doc.to_dict()
+                    product_data['sellerEmail'] = seller_data.get('email', '')
+                    product_data['sellerDisplayName'] = seller_data.get('displayName', '')
+
+            products.append(product_data)
+
+        # Get total count for pagination
+        total_query = db.collection('marketplace_listings')
+        if status:
+            total_query = total_query.where('status', '==', status)
+        if seller_id:
+            total_query = total_query.where('sellerId', '==', seller_id)
+        total_count = len(list(total_query.stream()))
+
+        return {
+            "products": products,
+            "total": total_count,
+            "limit": limit,
+            "offset": offset
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch marketplace products: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch products: {str(e)}")
+
+
+@app.get("/admin/marketplace/products/{product_id}", dependencies=[admin_dependency])
+@limiter.limit("30/minute")
+async def get_admin_marketplace_product(request: Request, product_id: str):
+    """Get a single marketplace product by ID"""
+    try:
+        product_ref = db.collection('marketplace_listings').document(product_id)
+        product_doc = product_ref.get()
+
+        if not product_doc.exists:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        product_data = product_doc.to_dict()
+        product_data['id'] = product_doc.id
+
+        # Get seller info
+        seller_id = product_data.get('sellerId')
+        if seller_id:
+            seller_doc = db.collection('users').document(seller_id).get()
+            if seller_doc.exists:
+                seller_data = seller_doc.to_dict()
+                product_data['sellerEmail'] = seller_data.get('email', '')
+                product_data['sellerDisplayName'] = seller_data.get('displayName', '')
+
+        # Get purchase count
+        purchases = db.collection('marketplace_purchases').where('productId', '==', product_id).where('status', '==', 'completed').stream()
+        product_data['purchaseCount'] = len(list(purchases))
+
+        return product_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch product {product_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch product: {str(e)}")
+
+
+class AdminProductUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = Field(None, ge=0.5, le=1000)
+    status: Optional[str] = Field(None, pattern="^(active|inactive|suspended|deleted)$")
+    featured: Optional[bool] = None
+    adminNotes: Optional[str] = None
+
+
+@app.put("/admin/marketplace/products/{product_id}", dependencies=[admin_dependency])
+@limiter.limit("20/minute")
+async def update_admin_marketplace_product(request: Request, product_id: str, update_data: AdminProductUpdate):
+    """Update a marketplace product (admin)"""
+    try:
+        product_ref = db.collection('marketplace_listings').document(product_id)
+        product_doc = product_ref.get()
+
+        if not product_doc.exists:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        # Build update dict from non-None fields
+        update_dict = {}
+        if update_data.title is not None:
+            update_dict['title'] = update_data.title
+        if update_data.description is not None:
+            update_dict['description'] = update_data.description
+        if update_data.price is not None:
+            update_dict['price'] = update_data.price
+        if update_data.status is not None:
+            update_dict['status'] = update_data.status
+        if update_data.featured is not None:
+            update_dict['featured'] = update_data.featured
+        if update_data.adminNotes is not None:
+            update_dict['adminNotes'] = update_data.adminNotes
+
+        if not update_dict:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        update_dict['updatedAt'] = firestore.SERVER_TIMESTAMP
+        update_dict['updatedBy'] = 'admin'
+
+        product_ref.update(update_dict)
+
+        logger.info(f"Admin updated product {product_id}: {list(update_dict.keys())}")
+        return {"message": "Product updated successfully", "updatedFields": list(update_dict.keys())}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update product {product_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update product: {str(e)}")
+
+
+@app.delete("/admin/marketplace/products/{product_id}", dependencies=[admin_dependency])
+@limiter.limit("10/minute")
+async def delete_admin_marketplace_product(request: Request, product_id: str, permanent: bool = False):
+    """Delete or soft-delete a marketplace product"""
+    try:
+        product_ref = db.collection('marketplace_listings').document(product_id)
+        product_doc = product_ref.get()
+
+        if not product_doc.exists:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        product_data = product_doc.to_dict()
+
+        if permanent:
+            # Permanent delete - only if no purchases exist
+            purchases = db.collection('marketplace_purchases').where('productId', '==', product_id).limit(1).stream()
+            if len(list(purchases)) > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot permanently delete product with existing purchases. Use soft delete instead."
+                )
+            product_ref.delete()
+            logger.info(f"Admin permanently deleted product {product_id}")
+            return {"message": "Product permanently deleted"}
+        else:
+            # Soft delete - mark as deleted
+            product_ref.update({
+                'status': 'deleted',
+                'deletedAt': firestore.SERVER_TIMESTAMP,
+                'deletedBy': 'admin'
+            })
+            logger.info(f"Admin soft-deleted product {product_id}")
+            return {"message": "Product marked as deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete product {product_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete product: {str(e)}")
+
+
+@app.post("/admin/marketplace/products/{product_id}/restore", dependencies=[admin_dependency])
+@limiter.limit("10/minute")
+async def restore_admin_marketplace_product(request: Request, product_id: str):
+    """Restore a soft-deleted marketplace product"""
+    try:
+        product_ref = db.collection('marketplace_listings').document(product_id)
+        product_doc = product_ref.get()
+
+        if not product_doc.exists:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        product_data = product_doc.to_dict()
+        if product_data.get('status') != 'deleted':
+            raise HTTPException(status_code=400, detail="Product is not deleted")
+
+        product_ref.update({
+            'status': 'active',
+            'restoredAt': firestore.SERVER_TIMESTAMP,
+            'restoredBy': 'admin'
+        })
+
+        logger.info(f"Admin restored product {product_id}")
+        return {"message": "Product restored successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restore product {product_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to restore product: {str(e)}")
+
+
+# --- Admin User Deletion Endpoint ---
+
+@app.delete("/admin/users/{user_id}", dependencies=[admin_dependency])
+@limiter.limit("5/minute")
+async def delete_admin_user(request: Request, user_id: str, permanent: bool = False):
+    """Delete or soft-delete a user account"""
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_data = user_doc.to_dict()
+
+        # Prevent deleting admin users
+        if user_data.get('isAdmin'):
+            raise HTTPException(status_code=403, detail="Cannot delete admin users")
+
+        if permanent:
+            # Permanent delete - delete from Firebase Auth and Firestore
+            try:
+                auth.delete_user(user_id)
+            except auth.UserNotFoundError:
+                logger.warning(f"User {user_id} not found in Firebase Auth, continuing with Firestore deletion")
+
+            # Delete user document (subcollections remain orphaned but inaccessible)
+            user_ref.delete()
+            logger.info(f"Admin permanently deleted user {user_id}")
+            return {"message": "User permanently deleted from Auth and Firestore"}
+        else:
+            # Soft delete - disable in Firebase Auth and mark in Firestore
+            try:
+                auth.update_user(user_id, disabled=True)
+            except auth.UserNotFoundError:
+                logger.warning(f"User {user_id} not found in Firebase Auth")
+
+            user_ref.update({
+                'status': 'deleted',
+                'disabled': True,
+                'deletedAt': firestore.SERVER_TIMESTAMP,
+                'deletedBy': 'admin'
+            })
+            logger.info(f"Admin soft-deleted user {user_id}")
+            return {"message": "User account disabled and marked as deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete user: {str(e)}")
+
+
+# --- Admin Payment Export Endpoint ---
+
+@app.get("/admin/payments/export", dependencies=[admin_dependency])
+@limiter.limit("5/minute")
+async def export_payments(
+    request: Request,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    payment_type: Optional[str] = None,
+    format: str = "json"
+):
+    """Export payment/transaction data for reporting"""
+    try:
+        # Parse dates
+        from datetime import datetime, timedelta
+
+        if start_date:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        else:
+            start_dt = datetime.now() - timedelta(days=30)  # Default: last 30 days
+
+        if end_date:
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        else:
+            end_dt = datetime.now()
+
+        payments = []
+
+        # Get credit purchases from webhooks
+        if not payment_type or payment_type == 'credits':
+            webhooks_ref = db.collection('processed_webhooks').where(
+                'processedAt', '>=', start_dt
+            ).where(
+                'processedAt', '<=', end_dt
+            ).order_by('processedAt', direction=firestore.Query.DESCENDING).limit(1000)
+
+            for doc in webhooks_ref.stream():
+                data = doc.to_dict()
+                payments.append({
+                    'id': doc.id,
+                    'type': 'credit_purchase',
+                    'userId': data.get('userId'),
+                    'amount': data.get('amount'),
+                    'credits': data.get('credits'),
+                    'status': data.get('status'),
+                    'date': data.get('processedAt').isoformat() if data.get('processedAt') else None,
+                    'transactionId': data.get('transactionId')
+                })
+
+        # Get marketplace purchases
+        if not payment_type or payment_type == 'marketplace':
+            purchases_ref = db.collection('marketplace_purchases').where(
+                'status', '==', 'completed'
+            ).order_by('completedAt', direction=firestore.Query.DESCENDING).limit(1000)
+
+            for doc in purchases_ref.stream():
+                data = doc.to_dict()
+                completed_at = data.get('completedAt')
+                if completed_at:
+                    if hasattr(completed_at, 'to_datetime'):
+                        completed_dt = completed_at.to_datetime()
+                    else:
+                        completed_dt = completed_at
+
+                    if start_dt <= completed_dt <= end_dt:
+                        payments.append({
+                            'id': doc.id,
+                            'type': 'marketplace_purchase',
+                            'buyerId': data.get('buyerId'),
+                            'sellerId': data.get('sellerId'),
+                            'productId': data.get('productId'),
+                            'productTitle': data.get('productTitle'),
+                            'amount': data.get('price'),
+                            'sellerEarnings': data.get('sellerEarnings'),
+                            'platformFee': data.get('platformFee'),
+                            'date': completed_dt.isoformat() if hasattr(completed_dt, 'isoformat') else str(completed_dt),
+                            'transactionId': data.get('paytrustTransactionId')
+                        })
+
+        # Get payouts
+        if not payment_type or payment_type == 'payouts':
+            users_ref = db.collection('users').stream()
+            for user_doc in users_ref:
+                payouts_ref = db.collection('users').document(user_doc.id).collection('payout_requests').where(
+                    'status', 'in', ['completed', 'approved', 'rejected']
+                ).limit(100)
+
+                for payout_doc in payouts_ref.stream():
+                    data = payout_doc.to_dict()
+                    requested_at = data.get('requestedAt')
+                    if requested_at:
+                        if hasattr(requested_at, 'to_datetime'):
+                            requested_dt = requested_at.to_datetime()
+                        else:
+                            requested_dt = requested_at
+
+                        if start_dt <= requested_dt <= end_dt:
+                            payments.append({
+                                'id': payout_doc.id,
+                                'type': 'payout',
+                                'userId': user_doc.id,
+                                'amount': data.get('amount'),
+                                'status': data.get('status'),
+                                'bankDetails': {
+                                    'accountHolder': data.get('bankDetails', {}).get('accountHolder'),
+                                    'iban': data.get('bankDetails', {}).get('iban', '')[-4:] if data.get('bankDetails', {}).get('iban') else None  # Last 4 only
+                                },
+                                'requestedAt': requested_dt.isoformat() if hasattr(requested_dt, 'isoformat') else str(requested_dt)
+                            })
+
+        # Sort by date
+        payments.sort(key=lambda x: x.get('date') or x.get('requestedAt') or '', reverse=True)
+
+        if format == 'csv':
+            import io
+            import csv
+
+            output = io.StringIO()
+            if payments:
+                fieldnames = list(payments[0].keys())
+                writer = csv.DictWriter(output, fieldnames=fieldnames)
+                writer.writeheader()
+                for payment in payments:
+                    # Flatten nested dicts for CSV
+                    flat_payment = {}
+                    for k, v in payment.items():
+                        if isinstance(v, dict):
+                            for sub_k, sub_v in v.items():
+                                flat_payment[f"{k}_{sub_k}"] = sub_v
+                        else:
+                            flat_payment[k] = v
+                    writer.writerow(flat_payment)
+
+            return Response(
+                content=output.getvalue(),
+                media_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=payments_export.csv"}
+            )
+
+        return {
+            "payments": payments,
+            "total": len(payments),
+            "startDate": start_dt.isoformat(),
+            "endDate": end_dt.isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to export payments: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to export payments: {str(e)}")
+
+
+# --- Withdrawal/Payout Models ---
+
+class BankDetailsModel(BaseModel):
+    iban: str = Field(..., min_length=15, max_length=34, description="International Bank Account Number")
+    accountHolder: str = Field(..., min_length=2, max_length=100, description="Account holder name")
+    bankName: Optional[str] = Field(None, max_length=100, description="Bank name (optional)")
+    bic: Optional[str] = Field(None, max_length=11, description="BIC/SWIFT code (optional)")
 
 class PayoutRequestCreate(BaseModel):
     amount: float = Field(..., gt=0, le=10000, description="Withdrawal amount in EUR")
-    paypalEmail: EmailStr
+    bankDetails: BankDetailsModel
 
 # --- User Authentication Dependency (for seller endpoints) ---
 async def verify_user_token(authorization: str = Header(...)):
@@ -2013,15 +2440,25 @@ async def create_payout_request(request: Request, payout_data: PayoutRequestCrea
         if pending_count > 0:
             raise HTTPException(status_code=400, detail="You already have a pending payout request")
 
-        # Create payout request document
+        # Get user email for the request
+        user_doc = db.collection('users').document(user_id).get()
+        user_email = user_doc.to_dict().get('email', '') if user_doc.exists else ''
+
+        # Create payout request document with bank details
         payout_ref = db.collection('users').document(user_id).collection('payout_requests').document()
         payout_request = {
             'id': payout_ref.id,
             'userId': user_id,
+            'userEmail': user_email,
             'amount': payout_data.amount,
-            'paypalEmail': payout_data.paypalEmail,
+            'bankDetails': {
+                'iban': payout_data.bankDetails.iban.replace(' ', '').upper(),
+                'accountHolder': payout_data.bankDetails.accountHolder.strip(),
+                'bankName': payout_data.bankDetails.bankName.strip() if payout_data.bankDetails.bankName else None,
+                'bic': payout_data.bankDetails.bic.replace(' ', '').upper() if payout_data.bankDetails.bic else None,
+            },
             'status': 'pending',
-            'createdAt': firestore.SERVER_TIMESTAMP,
+            'requestedAt': firestore.SERVER_TIMESTAMP,
             'docPath': f'users/{user_id}/payout_requests/{payout_ref.id}'
         }
         payout_ref.set(payout_request)
@@ -2039,7 +2476,7 @@ async def create_payout_request(request: Request, payout_data: PayoutRequestCrea
             "message": "Payout request created successfully",
             "requestId": payout_ref.id,
             "amount": payout_data.amount,
-            "paypalEmail": payout_data.paypalEmail,
+            "accountHolder": payout_data.bankDetails.accountHolder,
             "status": "pending"
         }
     except HTTPException:
@@ -2285,7 +2722,7 @@ async def send_withdrawal_notification(request: Request, notification_data: With
         return {"message": f"Failed to send email: {str(e)}", "emailSent": False}
 
 
-async def send_payout_status_email(user_id: str, status: str, amount: float, paypal_email: str = ""):
+async def send_payout_status_email(user_id: str, status: str, amount: float, account_holder: str = ""):
     """Helper function to send payout status emails to sellers"""
     try:
         if not RESEND_API_KEY:
@@ -2308,11 +2745,11 @@ async def send_payout_status_email(user_id: str, status: str, amount: float, pay
 
         # Generate email based on status
         if status == 'approved':
-            email_html = get_payout_approved_email(seller_name, amount, paypal_email)
+            email_html = get_payout_approved_email(seller_name, amount, account_holder)
             subject = f"✓ Your Withdrawal of €{amount:.2f} Has Been Approved"
         elif status == 'completed':
             email_html = get_payout_completed_email(seller_name, amount)
-            subject = f"✓ €{amount:.2f} Has Been Sent to Your PayPal"
+            subject = f"✓ €{amount:.2f} Has Been Transferred to Your Bank Account"
         elif status == 'rejected':
             email_html = get_payout_rejected_email(seller_name, amount)
             subject = f"Withdrawal Request Update - €{amount:.2f}"

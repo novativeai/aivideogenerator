@@ -2,7 +2,7 @@
 Email templates for SendGrid notifications
 """
 
-def get_payout_approved_email(seller_name: str, amount: float, paypal_email: str) -> str:
+def get_payout_approved_email(seller_name: str, amount: float, account_holder: str) -> str:
     """Email template for payout approval notification"""
     return f"""
     <!DOCTYPE html>
@@ -166,8 +166,8 @@ def get_payout_approved_email(seller_name: str, amount: float, paypal_email: str
                     <div class="greeting">Hi {seller_name},</div>
 
                     <div class="message">
-                        Great news! Your payout request has been approved and we're now processing your PayPal transfer.
-                        You should receive the funds in your PayPal account within 1-2 business days.
+                        Great news! Your payout request has been approved and we're now processing your bank transfer.
+                        You should receive the funds in your bank account within 2-5 business days.
                     </div>
 
                     <div class="status-box">
@@ -177,8 +177,8 @@ def get_payout_approved_email(seller_name: str, amount: float, paypal_email: str
                             <span class="status-value">€{amount:.2f}</span>
                         </div>
                         <div class="status-row">
-                            <span class="status-label">PayPal Email:</span>
-                            <span class="status-value">{paypal_email}</span>
+                            <span class="status-label">Account Holder:</span>
+                            <span class="status-value">{account_holder}</span>
                         </div>
                         <div class="status-row">
                             <span class="status-label">Status:</span>
@@ -190,9 +190,9 @@ def get_payout_approved_email(seller_name: str, amount: float, paypal_email: str
                         <h3>What Happens Next?</h3>
                         <p>
                             1. We've approved your withdrawal request<br>
-                            2. We're processing your PayPal transfer<br>
-                            3. You'll receive the funds in your PayPal account within 1-2 business days<br>
-                            4. Check your PayPal account for the deposit
+                            2. We're processing your bank transfer<br>
+                            3. You'll receive the funds in your bank account within 2-5 business days<br>
+                            4. Check your bank account for the deposit
                         </p>
                     </div>
 
@@ -202,18 +202,18 @@ def get_payout_approved_email(seller_name: str, amount: float, paypal_email: str
                         If you have any questions about your payout, please contact our support team.
                     </div>
 
-                    <a href="https://yourdomain.com/account/seller" class="cta-button">View My Account</a>
+                    <a href="https://reelzila.studio/account?tab=seller" class="cta-button">View My Account</a>
                 </div>
 
                 <div class="footer">
-                    <p>© 2024 AI Video Generator. All rights reserved.</p>
+                    <p>© 2024 Reelzila. All rights reserved.</p>
                     <p>
-                        <a href="https://yourdomain.com/privacy">Privacy Policy</a> |
-                        <a href="https://yourdomain.com/terms">Terms of Service</a> |
-                        <a href="https://yourdomain.com/support">Support</a>
+                        <a href="https://reelzila.studio/privacy">Privacy Policy</a> |
+                        <a href="https://reelzila.studio/terms">Terms of Service</a> |
+                        <a href="https://reelzila.studio/contact">Support</a>
                     </p>
                     <p style="margin-top: 15px; color: #ccc;">
-                        You received this email because you requested a payout on AI Video Generator
+                        You received this email because you requested a payout on Reelzila
                     </p>
                 </div>
             </div>
@@ -376,8 +376,8 @@ def get_payout_completed_email(seller_name: str, amount: float) -> str:
                     <div class="greeting">Hi {seller_name},</div>
 
                     <div class="message">
-                        Excellent! Your payout has been completed and transferred to your PayPal account.
-                        The funds should now be available in your PayPal wallet.
+                        Excellent! Your payout has been completed and transferred to your bank account.
+                        The funds should now be available in your account.
                     </div>
 
                     <div class="success-box">
@@ -396,8 +396,8 @@ def get_payout_completed_email(seller_name: str, amount: float) -> str:
                             <span class="details-value">€{amount:.2f}</span>
                         </div>
                         <div class="details-row">
-                            <span class="details-label">Check your PayPal:</span>
-                            <span class="details-value">PayPal Account</span>
+                            <span class="details-label">Destination:</span>
+                            <span class="details-value">Your Bank Account</span>
                         </div>
                     </div>
 
@@ -408,15 +408,15 @@ def get_payout_completed_email(seller_name: str, amount: float) -> str:
 
                     <div class="divider"></div>
 
-                    <a href="https://yourdomain.com/account/seller" class="cta-button">View My Earnings</a>
+                    <a href="https://reelzila.studio/account?tab=seller" class="cta-button">View My Earnings</a>
                 </div>
 
                 <div class="footer">
-                    <p>© 2024 AI Video Generator. All rights reserved.</p>
+                    <p>© 2024 Reelzila. All rights reserved.</p>
                     <p>
-                        <a href="https://yourdomain.com/privacy">Privacy Policy</a> |
-                        <a href="https://yourdomain.com/terms">Terms of Service</a> |
-                        <a href="https://yourdomain.com/support">Support</a>
+                        <a href="https://reelzila.studio/privacy">Privacy Policy</a> |
+                        <a href="https://reelzila.studio/terms">Terms of Service</a> |
+                        <a href="https://reelzila.studio/contact">Support</a>
                     </p>
                 </div>
             </div>
@@ -622,7 +622,7 @@ def get_payout_rejected_email(seller_name: str, amount: float) -> str:
                     <div class="next-steps">
                         <h3>What Should You Do?</h3>
                         <p>
-                            1. Check your PayPal email address is correct<br>
+                            1. Check your bank account details are correct<br>
                             2. Verify your account information<br>
                             3. Ensure you meet our seller requirements<br>
                             4. Contact support if you need assistance<br>
@@ -632,15 +632,15 @@ def get_payout_rejected_email(seller_name: str, amount: float) -> str:
 
                     <div class="divider"></div>
 
-                    <a href="https://yourdomain.com/support/contact" class="cta-button">Contact Support</a>
+                    <a href="https://reelzila.studio/contact" class="cta-button">Contact Support</a>
                 </div>
 
                 <div class="footer">
-                    <p>© 2024 AI Video Generator. All rights reserved.</p>
+                    <p>© 2024 Reelzila. All rights reserved.</p>
                     <p>
-                        <a href="https://yourdomain.com/privacy">Privacy Policy</a> |
-                        <a href="https://yourdomain.com/terms">Terms of Service</a> |
-                        <a href="https://yourdomain.com/support">Support</a>
+                        <a href="https://reelzila.studio/privacy">Privacy Policy</a> |
+                        <a href="https://reelzila.studio/terms">Terms of Service</a> |
+                        <a href="https://reelzila.studio/contact">Support</a>
                     </p>
                 </div>
             </div>
@@ -838,17 +838,17 @@ def get_admin_payout_ready_email(seller_name: str, amount: float, paypal_email: 
 
 
 # Function to select and render appropriate template
-def get_payout_email(status: str, seller_name: str, amount: float, paypal_email: str = "", seller_id: str = "") -> str:
+def get_payout_email(status: str, seller_name: str, amount: float, account_holder: str = "", seller_id: str = "") -> str:
     """Get email template based on payout status"""
     if status.lower() == "approved":
-        return get_payout_approved_email(seller_name, amount, paypal_email)
+        return get_payout_approved_email(seller_name, amount, account_holder)
     elif status.lower() == "completed":
         return get_payout_completed_email(seller_name, amount)
     elif status.lower() == "rejected":
         return get_payout_rejected_email(seller_name, amount)
     else:
         # Default to approved template
-        return get_payout_approved_email(seller_name, amount, paypal_email)
+        return get_payout_approved_email(seller_name, amount, account_holder)
 
 
 def get_admin_email(seller_name: str, amount: float, paypal_email: str, seller_id: str) -> str:

@@ -492,14 +492,15 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
     }
     
     backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
-    
+    frontend_url = os.getenv('FRONTEND_URL', 'https://reelzila.studio')
+
     # Simplified payload matching your example
     payload = {
         "paymentType": "DEPOSIT",
         "amount": amount,
         "currency": "EUR",
-        "returnUrl": f"https://ai-video-generator-mvp.netlify.app/payment/success?payment_id={payment_id}",
-        "errorUrl": f"https://ai-video-generator-mvp.netlify.app/payment/cancel?payment_id={payment_id}",
+        "returnUrl": f"{frontend_url}/payment/success?payment_id={payment_id}",
+        "errorUrl": f"{frontend_url}/payment/cancel?payment_id={payment_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
         "referenceId": f"payment_id={payment_id};user_id={payment_request.userId}",
         "customer": {
@@ -619,13 +620,14 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
     next_billing = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
     
     backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
-    
+    frontend_url = os.getenv('FRONTEND_URL', 'https://reelzila.studio')
+
     payload = {
         "paymentType": "DEPOSIT",
         "amount": amount,
         "currency": "EUR",
-        "returnUrl": f"https://ai-video-generator-mvp.netlify.app/payment/success?subscription_id={subscription_id}",
-        "errorUrl": f"https://ai-video-generator-mvp.netlify.app/payment/cancel?subscription_id={subscription_id}",
+        "returnUrl": f"{frontend_url}/payment/success?subscription_id={subscription_id}",
+        "errorUrl": f"{frontend_url}/payment/cancel?subscription_id={subscription_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
         "startRecurring": True,
         "subscription": {
@@ -1083,7 +1085,8 @@ async def create_customer_portal(request: Request, portal_request: PortalRequest
         raise HTTPException(status_code=404, detail="User not found.")
 
     # For now, redirect to your own account management page
-    return {"portalUrl": "https://ai-video-generator-mvp.netlify.app/account"}
+    frontend_url = os.getenv('FRONTEND_URL', 'https://reelzila.studio')
+    return {"portalUrl": f"{frontend_url}/account"}
 
 
 # --- fal.ai Image Upload Helper ---
@@ -2927,7 +2930,7 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
     }
 
     backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
-    frontend_url = "https://ai-video-generator-mvp.netlify.app"
+    frontend_url = os.getenv('FRONTEND_URL', 'https://reelzila.studio')
 
     payload = {
         "paymentType": "DEPOSIT",

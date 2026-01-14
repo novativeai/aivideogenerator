@@ -127,3 +127,12 @@ dmypy.json
 # Cython debug symbols
 cython_debug/.DS_Store
 .vercel
+
+# Separate repos (not part of backend)
+video-generator-frontend/
+video-generator-admin/
+video-generator-backend/
+node_modules/
+.claude/
+.playwright-mcp/
+admin/

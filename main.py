@@ -413,9 +413,21 @@ admin_dependency = Depends(check_is_admin)
 @app.get("/health")
 async def health_check():
     """Public health check for load balancers and monitoring"""
+    # Get Firebase project ID for debugging
+    firebase_project = None
+    try:
+        firebase_secret = os.getenv('FIREBASE_SERVICE_ACCOUNT_BASE64')
+        if firebase_secret:
+            decoded = base64.b64decode(firebase_secret).decode('utf-8')
+            service_info = json.loads(decoded)
+            firebase_project = service_info.get('project_id')
+    except Exception:
+        firebase_project = "error_reading"
+
     return {
         "status": "healthy" if db else "unhealthy",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "firebase_project": firebase_project
     }
 
 @app.get("/admin/health-detailed", dependencies=[admin_dependency])

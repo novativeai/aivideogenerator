@@ -510,12 +510,24 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
         }
     }
 
-    logger.debug(f"PayTrust API request for one-time payment {payment_id}")
+    logger.info(f"[PAYTRUST] Initiating payment request", extra={
+        "payment_id": payment_id,
+        "user_id": payment_request.userId,
+        "amount": amount,
+        "credits": payment_request.credits,
+        "api_url": f"{PAYTRUST_API_URL}/payments",
+        "webhook_url": f"{backend_url}/paytrust-webhook"
+    })
+    logger.debug(f"[PAYTRUST] Request payload: {payload}")
 
     try:
         response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
 
-        logger.debug(f"PayTrust response status: {response.status_code} for payment {payment_id}")
+        logger.info(f"[PAYTRUST] Response received", extra={
+            "payment_id": payment_id,
+            "status_code": response.status_code,
+            "response_text": response.text[:500] if response.text else "empty"
+        })
 
         response.raise_for_status()
         payment_data = response.json()
@@ -632,12 +644,24 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
         "paymentMethod": "BASIC_CARD"
     }
 
-    logger.debug(f"PayTrust API request for subscription {subscription_id}")
+    logger.info(f"[PAYTRUST] Initiating subscription request", extra={
+        "subscription_id": subscription_id,
+        "user_id": sub_request.userId,
+        "amount": amount,
+        "plan": plan_name,
+        "api_url": f"{PAYTRUST_API_URL}/payments",
+        "webhook_url": f"{backend_url}/paytrust-webhook"
+    })
+    logger.debug(f"[PAYTRUST] Subscription payload: {payload}")
 
     try:
         response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
 
-        logger.debug(f"PayTrust response status: {response.status_code} for subscription {subscription_id}")
+        logger.info(f"[PAYTRUST] Subscription response received", extra={
+            "subscription_id": subscription_id,
+            "status_code": response.status_code,
+            "response_text": response.text[:500] if response.text else "empty"
+        })
 
         response.raise_for_status()
         payment_data = response.json()
@@ -712,37 +736,41 @@ async def paytrust_webhook(request: Request):
 
         payload = json.loads(body)
 
+        # Log full payload for debugging
+        logger.info(f"[PAYTRUST] ========== WEBHOOK RECEIVED ==========")
+        logger.info(f"[PAYTRUST] Timestamp: {datetime.now().isoformat()}")
+        logger.info(f"[PAYTRUST] Raw payload: {json.dumps(payload, indent=2)}")
+        logger.info(f"[PAYTRUST] Headers: X-PayTrust-Signature={'present' if signature else 'absent'}")
+
         # --- Idempotency Check ---
         webhook_id = payload.get("id") or payload.get("result", {}).get("id")
+        logger.info(f"[PAYTRUST] Webhook ID: {webhook_id}")
+
         if webhook_id and db:
             webhook_ref = db.collection('processed_webhooks').document(str(webhook_id))
             if webhook_ref.get().exists:
-                logger.info(f"Webhook {webhook_id} already processed, skipping")
+                logger.info(f"[PAYTRUST] Webhook {webhook_id} already processed, skipping (idempotency)")
                 return {"status": "already_processed", "webhook_id": webhook_id}
-
-        logger.info(f"WEBHOOK RECEIVED: {datetime.now()}")
-        logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
 
         # Extract event data from PayTrust response
         # PayTrust may send data in different structures, handle both
         if "result" in payload:
             event_data = payload.get("result", {})
+            logger.info(f"[PAYTRUST] Using 'result' wrapper structure")
         else:
             event_data = payload
-        
+            logger.info(f"[PAYTRUST] Using direct payload structure")
+
         state = event_data.get("state") or payload.get("state")
         transaction_id = event_data.get("transactionId") or event_data.get("id")
         payment_id = event_data.get("id")
         reference_id = event_data.get("referenceId", "")
         amount = event_data.get("amount")
         payment_type = event_data.get("paymentType")
-        
-        logger.info(f"Webhook received - State: {state}", extra={
-            "transaction_id": transaction_id,
-            "reference_id": reference_id,
-            "amount": amount
-        })
-        
+
+        logger.info(f"[PAYTRUST] Extracted fields: state={state}, transaction_id={transaction_id}, payment_id={payment_id}, amount={amount}, payment_type={payment_type}")
+        logger.info(f"[PAYTRUST] Reference ID: {reference_id}")
+
         # Parse referenceId to extract metadata
         metadata = {}
         if reference_id:
@@ -750,7 +778,7 @@ async def paytrust_webhook(request: Request):
                 if "=" in pair:
                     key, value = pair.split("=", 1)
                     metadata[key] = value
-        
+
         user_id = metadata.get("user_id")
         payment_doc_id = metadata.get("payment_id")
         subscription_doc_id = metadata.get("subscription_id")
@@ -759,22 +787,24 @@ async def paytrust_webhook(request: Request):
         seller_id = metadata.get("seller_id")
         product_id = metadata.get("product_id")
 
-        logger.debug(f"Extracted webhook metadata", extra={"metadata": metadata})
+        logger.info(f"[PAYTRUST] Parsed metadata: user_id={user_id}, payment_doc_id={payment_doc_id}, subscription_doc_id={subscription_doc_id}, marketplace_purchase_id={marketplace_purchase_id}")
 
         if not user_id:
-            logger.warning("No user_id in webhook payload")
+            logger.warning(f"[PAYTRUST] No user_id in webhook payload - cannot process")
             return {"status": "received", "warning": "No user_id found"}
-        
+
         user_ref = db.collection('users').document(user_id)
-        
+
         # Handle different payment states
         # PayTrust uses: COMPLETED (success), FAILED, DECLINED, PENDING, CHECKOUT
+        logger.info(f"[PAYTRUST] Processing state: {state} for user {user_id}")
+
         if state == "COMPLETED" or state == "SUCCESS":
-            logger.info(f"Processing successful payment for user {user_id}")
+            logger.info(f"[PAYTRUST] ✅ SUCCESS - Processing payment for user {user_id}")
 
             # Check if this is a subscription payment or one-time payment
             if subscription_doc_id or price_id:
-                logger.info(f"Subscription payment detected for user {user_id}")
+                logger.info(f"[PAYTRUST] 📦 Type: SUBSCRIPTION payment for user {user_id}")
 
                 # This is a subscription payment (initial or recurring)
                 subscription_info = PRICE_ID_TO_CREDITS.get(price_id) if price_id else None
@@ -819,7 +849,7 @@ async def paytrust_webhook(request: Request):
                 logger.info(f"Subscription payment successful for user {user_id}. Added {credits_to_add} credits.")
 
             elif payment_doc_id:
-                logger.info(f"One-time payment detected: {payment_doc_id}")
+                logger.info(f"[PAYTRUST] 💰 Type: ONE-TIME payment detected: {payment_doc_id}")
                 
                 # This is a one-time payment
                 payment_ref = user_ref.collection('payments').document(payment_doc_id)
@@ -829,8 +859,8 @@ async def paytrust_webhook(request: Request):
                     payment_data = payment_doc.to_dict()
                     credits_to_add = payment_data.get("creditsPurchased", 0)
 
-                    logger.debug(f"Payment status before update: {payment_data.get('status')}")
-                    logger.info(f"Adding {credits_to_add} credits from one-time purchase", extra={"user_id": user_id, "payment_id": payment_doc_id})
+                    logger.info(f"[PAYTRUST] Payment doc found. Status: {payment_data.get('status')}, Credits to add: {credits_to_add}")
+                    logger.info(f"[PAYTRUST] Updating payment status pending -> paid and adding {credits_to_add} credits")
                     
                     # ✅ CRITICAL: Update payment status from pending to paid
                     payment_ref.update({
@@ -841,28 +871,25 @@ async def paytrust_webhook(request: Request):
                     
                     # Verify status was updated
                     updated_payment = payment_ref.get().to_dict()
-                    logger.debug(f"Payment status after update: {updated_payment.get('status')}")
-                    
+                    logger.info(f"[PAYTRUST] Payment status after update: {updated_payment.get('status')}")
+
                     # Add credits to user
                     user_ref.update({
                         "credits": firestore.Increment(credits_to_add)
                     })
-                    
+
                     # Verify credits were added
                     updated_user = user_ref.get().to_dict()
                     new_credit_balance = updated_user.get("credits", 0)
-                    
-                    logger.info(f"One-time payment successful for user {user_id}", extra={
-                        "credits_added": credits_to_add,
-                        "new_balance": new_credit_balance,
-                        "payment_id": payment_doc_id
-                    })
+
+                    logger.info(f"[PAYTRUST] ✅ ONE-TIME PAYMENT COMPLETE for user {user_id}")
+                    logger.info(f"[PAYTRUST] Credits added: {credits_to_add}, New balance: {new_credit_balance}, Payment ID: {payment_doc_id}")
                 else:
-                    logger.error(f"Payment document not found: {payment_doc_id}")
+                    logger.error(f"[PAYTRUST] ❌ Payment document NOT FOUND: {payment_doc_id}")
 
             elif marketplace_purchase_id:
                 # This is a marketplace purchase
-                logger.info(f"Marketplace purchase detected: {marketplace_purchase_id}")
+                logger.info(f"[PAYTRUST] 🛒 Type: MARKETPLACE purchase detected: {marketplace_purchase_id}")
 
                 purchase_ref = db.collection('marketplace_purchases').document(marketplace_purchase_id)
                 purchase_doc = purchase_ref.get()
@@ -957,10 +984,10 @@ async def paytrust_webhook(request: Request):
                     logger.error(f"Marketplace purchase document not found: {marketplace_purchase_id}")
 
             else:
-                logger.warning(f"No payment_id, subscription_id, or marketplace_purchase_id found in metadata for user {user_id}")
-        
+                logger.warning(f"[PAYTRUST] ⚠️ No payment_id, subscription_id, or marketplace_purchase_id found in metadata for user {user_id}")
+
         elif state == "FAIL" or state == "FAILED" or state == "DECLINED":
-            logger.warning(f"Payment FAILED or DECLINED for user {user_id}")
+            logger.warning(f"[PAYTRUST] ❌ FAILED/DECLINED - Payment failed for user {user_id}")
             
             # Handle failed payments
             if payment_doc_id:
@@ -993,14 +1020,14 @@ async def paytrust_webhook(request: Request):
                     })
                     logger.info(f"Updated marketplace purchase status to failed: {marketplace_purchase_id}")
 
-            logger.info(f"Payment failed for user {user_id}")
+            logger.info(f"[PAYTRUST] Failed payment processing complete for user {user_id}")
 
         elif state == "PENDING" or state == "CHECKOUT":
             # Payment is still processing
-            logger.info(f"Payment pending/checkout for user {user_id}")
-        
+            logger.info(f"[PAYTRUST] ⏳ PENDING/CHECKOUT - Payment still processing for user {user_id}")
+
         else:
-            logger.warning(f"Unknown payment state: {state}")
+            logger.warning(f"[PAYTRUST] ❓ UNKNOWN state: {state} for user {user_id}")
 
         # --- Mark webhook as processed for idempotency ---
         if webhook_id and db:
@@ -1009,15 +1036,16 @@ async def paytrust_webhook(request: Request):
                 "state": state,
                 "userId": user_id
             })
+            logger.info(f"[PAYTRUST] Marked webhook {webhook_id} as processed (idempotency)")
 
-        logger.info(f"Webhook processed successfully for user {user_id}")
+        logger.info(f"[PAYTRUST] ========== WEBHOOK PROCESSING COMPLETE ==========")
         return {"status": "received"}
 
     except HTTPException:
         # Re-raise HTTP exceptions (signature validation failures)
         raise
     except Exception as e:
-        logger.error(f"WEBHOOK ERROR: {e}", exc_info=True)
+        logger.error(f"[PAYTRUST] ❌ WEBHOOK ERROR: {e}", exc_info=True)
         # Return 200 even on errors to prevent PayTrust from retrying
         return {"status": "error", "message": str(e)}
 
@@ -2917,12 +2945,25 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
         }
     }
 
-    logger.debug(f"PayTrust API request for marketplace purchase {purchase_id}")
+    logger.info(f"[PAYTRUST] Initiating marketplace purchase payment", extra={
+        "purchase_id": purchase_id,
+        "user_id": user_id,
+        "seller_id": verified_seller_id,
+        "product_id": purchase_request.productId,
+        "amount": verified_price,
+        "api_url": f"{PAYTRUST_API_URL}/payments",
+        "webhook_url": f"{backend_url}/paytrust-webhook"
+    })
+    logger.debug(f"[PAYTRUST] Marketplace purchase payload: {payload}")
 
     try:
         response = requests.post(f"{PAYTRUST_API_URL}/payments", json=payload, headers=headers)
 
-        logger.debug(f"PayTrust response status: {response.status_code} for marketplace purchase {purchase_id}")
+        logger.info(f"[PAYTRUST] Marketplace purchase response received", extra={
+            "purchase_id": purchase_id,
+            "status_code": response.status_code,
+            "response_text": response.text[:500] if response.text else "empty"
+        })
 
         response.raise_for_status()
         payment_data = response.json()

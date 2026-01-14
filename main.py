@@ -514,7 +514,7 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
         "payment_id": payment_id,
         "user_id": payment_request.userId,
         "amount": amount,
-        "credits": payment_request.credits,
+        "credits": credits_to_add,
         "api_url": f"{PAYTRUST_API_URL}/payments",
         "webhook_url": f"{backend_url}/paytrust-webhook"
     })

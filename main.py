@@ -2283,6 +2283,11 @@ class PayoutRequestCreate(BaseModel):
 class SellerProfileUpdateRequest(BaseModel):
     bankDetails: Optional[BankDetailsModel] = None
 
+class WithdrawalNotificationRequest(BaseModel):
+    requestId: str
+    amount: float
+    bankDetails: Optional[BankDetailsModel] = None
+
 # --- User Authentication Dependency (for seller endpoints) ---
 async def verify_user_token(authorization: str = Header(...)):
     """Verify Firebase ID token and return user ID"""
@@ -2693,14 +2698,23 @@ async def send_withdrawal_notification(request: Request, notification_data: With
         seller_name = user_data.get('displayName') or user_data.get('name') or 'Unknown Seller'
         seller_email = user_data.get('email', 'No email')
 
-        # Generate email HTML
+        # Generate email HTML with bank details
+        bank_details_dict = None
+        if notification_data.bankDetails:
+            bank_details_dict = {
+                'iban': notification_data.bankDetails.iban,
+                'accountHolder': notification_data.bankDetails.accountHolder,
+                'bankName': notification_data.bankDetails.bankName,
+                'bic': notification_data.bankDetails.bic
+            }
+
         email_html = get_new_withdrawal_request_email(
             seller_name=seller_name,
             seller_email=seller_email,
             amount=notification_data.amount,
-            paypal_email=notification_data.paypalEmail,
             seller_id=user_id,
-            request_id=notification_data.requestId
+            request_id=notification_data.requestId,
+            bank_details=bank_details_dict
         )
 
         # Send email via Resend

@@ -856,8 +856,19 @@ def get_admin_email(seller_name: str, amount: float, paypal_email: str, seller_i
     return get_admin_payout_ready_email(seller_name, amount, paypal_email, seller_id)
 
 
-def get_new_withdrawal_request_email(seller_name: str, seller_email: str, amount: float, paypal_email: str, seller_id: str, request_id: str) -> str:
+def get_new_withdrawal_request_email(seller_name: str, seller_email: str, amount: float, seller_id: str, request_id: str, bank_details: dict = None) -> str:
     """Email template for admin notification of NEW withdrawal request (before approval)"""
+    # Format bank details for display
+    if bank_details:
+        iban = bank_details.get('iban', 'Not provided')
+        account_holder = bank_details.get('accountHolder', 'Not provided')
+        bank_name = bank_details.get('bankName', 'Not specified')
+        bic = bank_details.get('bic', 'Not specified')
+    else:
+        iban = 'Not provided'
+        account_holder = 'Not provided'
+        bank_name = 'Not specified'
+        bic = 'Not specified'
     return f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -1029,7 +1040,7 @@ def get_new_withdrawal_request_email(seller_name: str, seller_email: str, amount
                 <div class="content">
                     <div class="alert-box">
                         <h2>🔔 New Payout Request Submitted</h2>
-                        <p>A seller has requested a withdrawal. Please process this payment manually via PayPal.</p>
+                        <p>A seller has requested a withdrawal. Please process this bank transfer from the admin dashboard.</p>
                     </div>
 
                     <div class="amount">€{amount:.2f}</div>
@@ -1058,8 +1069,23 @@ def get_new_withdrawal_request_email(seller_name: str, seller_email: str, amount
                         </div>
 
                         <div class="detail-row">
-                            <span class="detail-label">PayPal Email:</span>
-                            <span class="detail-value" style="color: #3b82f6;">{paypal_email}</span>
+                            <span class="detail-label">Account Holder:</span>
+                            <span class="detail-value" style="color: #3b82f6;">{account_holder}</span>
+                        </div>
+
+                        <div class="detail-row">
+                            <span class="detail-label">IBAN:</span>
+                            <span class="detail-value" style="font-family: monospace;">{iban}</span>
+                        </div>
+
+                        <div class="detail-row">
+                            <span class="detail-label">Bank Name:</span>
+                            <span class="detail-value">{bank_name}</span>
+                        </div>
+
+                        <div class="detail-row">
+                            <span class="detail-label">BIC/SWIFT:</span>
+                            <span class="detail-value" style="font-family: monospace;">{bic}</span>
                         </div>
 
                         <div class="detail-row">
@@ -1074,17 +1100,18 @@ def get_new_withdrawal_request_email(seller_name: str, seller_email: str, amount
                     </div>
 
                     <div class="action-section">
-                        <h3>⚙️ Manual Processing Steps:</h3>
+                        <h3>⚙️ Processing Steps:</h3>
                         <ol>
-                            <li><strong>Log in to your PayPal business account</strong></li>
-                            <li><strong>Send payment</strong> to the following PayPal email:<br>
-                                <div class="copy-box">{paypal_email}</div>
+                            <li><strong>Review the request</strong> in the admin dashboard at reelzila-admin.vercel.app/payouts</li>
+                            <li><strong>Approve the request</strong> if details are correct</li>
+                            <li><strong>Initiate bank transfer</strong> to:<br>
+                                <div class="copy-box">IBAN: {iban}<br>Account Holder: {account_holder}</div>
                             </li>
                             <li><strong>Amount to send:</strong><br>
                                 <div class="copy-box">€{amount:.2f}</div>
                             </li>
-                            <li><strong>Add a note:</strong> "reelzila Seller Payout - Request #{request_id}"</li>
-                            <li><strong>After transfer is complete:</strong> Update the request status in your admin dashboard to "Completed"</li>
+                            <li><strong>Reference:</strong> "Reelzila Payout - #{request_id}"</li>
+                            <li><strong>After transfer is complete:</strong> Mark as "Completed" in the admin dashboard</li>
                         </ol>
                     </div>
 

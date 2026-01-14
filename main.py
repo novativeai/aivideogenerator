@@ -2280,6 +2280,9 @@ class PayoutRequestCreate(BaseModel):
     amount: float = Field(..., gt=0, le=10000, description="Withdrawal amount in EUR")
     bankDetails: BankDetailsModel
 
+class SellerProfileUpdateRequest(BaseModel):
+    bankDetails: Optional[BankDetailsModel] = None
+
 # --- User Authentication Dependency (for seller endpoints) ---
 async def verify_user_token(authorization: str = Header(...)):
     """Verify Firebase ID token and return user ID"""
@@ -2340,7 +2343,7 @@ async def get_seller_profile(request: Request, user_id: str = Depends(verify_use
 @app.post("/seller/profile")
 @limiter.limit("10/minute")
 async def update_seller_profile(request: Request, profile_data: SellerProfileUpdateRequest, user_id: str = Depends(verify_user_token)):
-    """Update the seller profile for the authenticated user"""
+    """Update the seller profile for the authenticated user (bank details)"""
     try:
         user_ref = db.collection('users').document(user_id)
         user_doc = user_ref.get()
@@ -2348,14 +2351,19 @@ async def update_seller_profile(request: Request, profile_data: SellerProfileUpd
         if not user_doc.exists:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Update seller profile with PayPal email
-        user_ref.update({
-            'sellerProfile.paypalEmail': profile_data.paypalEmail,
-            'sellerProfile.updatedAt': firestore.SERVER_TIMESTAMP
-        })
+        # Update bank details in seller_profile subcollection
+        if profile_data.bankDetails:
+            bank_ref = user_ref.collection('seller_profile').document('bank_details')
+            bank_ref.set({
+                'iban': profile_data.bankDetails.iban.replace(' ', '').upper(),
+                'accountHolder': profile_data.bankDetails.accountHolder.strip(),
+                'bankName': profile_data.bankDetails.bankName.strip() if profile_data.bankDetails.bankName else None,
+                'bic': profile_data.bankDetails.bic.replace(' ', '').upper() if profile_data.bankDetails.bic else None,
+                'updatedAt': firestore.SERVER_TIMESTAMP
+            }, merge=True)
 
         logger.info(f"Seller profile updated for user {user_id}")
-        return {"message": "Profile updated successfully", "paypalEmail": profile_data.paypalEmail}
+        return {"message": "Bank details updated successfully"}
     except HTTPException:
         raise
     except Exception as e:

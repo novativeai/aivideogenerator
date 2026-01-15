@@ -217,7 +217,9 @@ FAL_MODELS = {
     "veo-3.1": {
         "t2v": "fal-ai/veo3.1",
         "i2v": "fal-ai/veo3.1/reference-to-video",
-        "image_param": "image_url"
+        "image_param": "image_urls",
+        "image_is_array": True,  # VEO 3.1 i2v expects image_urls as array
+        "duration_suffix": "s"   # VEO 3.1 requires duration as "8s" not "8"
     },
     "sora-2": {
         "t2v": "fal-ai/sora-2/text-to-video",
@@ -1237,13 +1239,26 @@ async def generate_media(request: Request, video_request: VideoRequest):
                     if uploaded_url and image_param:
                         # Remove the original param and use the model's expected parameter name
                         api_params.pop(param_name, None)
-                        api_params[image_param] = uploaded_url
+                        # Some models (VEO 3.1) expect image_urls as array
+                        if model_config.get("image_is_array"):
+                            api_params[image_param] = [uploaded_url]
+                            logger.info(f"Image uploaded for {video_request.model_id} as array")
+                        else:
+                            api_params[image_param] = uploaded_url
                         has_image = True
                         logger.info(f"Image uploaded for {video_request.model_id}, using I2V endpoint")
                         break
                 else:
                     # Remove empty or invalid image params
                     api_params.pop(param_name, None)
+
+        # Format duration with suffix if required by model (e.g., VEO 3.1 needs "8s" not "8")
+        duration_suffix = model_config.get("duration_suffix")
+        if duration_suffix and "duration" in api_params:
+            duration_val = str(api_params["duration"])
+            if not duration_val.endswith(duration_suffix):
+                api_params["duration"] = f"{duration_val}{duration_suffix}"
+                logger.info(f"Duration formatted to: {api_params['duration']}")
 
         # Select the appropriate model endpoint
         if "t2i" in model_config:

@@ -494,19 +494,21 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
     backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
     frontend_url = os.getenv('FRONTEND_URL', 'https://reelzila.studio')
 
-    # Simplified payload matching your example
+    # PayTrust payment payload
     payload = {
         "paymentType": "DEPOSIT",
+        "paymentMethod": "BASIC_CARD",
         "amount": amount,
         "currency": "EUR",
+        "description": f"Reelzila Credits Purchase - {credits_to_add} credits",
         "returnUrl": f"{frontend_url}/payment/success?payment_id={payment_id}",
         "errorUrl": f"{frontend_url}/payment/cancel?payment_id={payment_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
         "referenceId": f"payment_id={payment_id};user_id={payment_request.userId}",
         "customer": {
             "referenceId": payment_request.userId,
-            "firstName": user_data.get("name", "").split()[0] if user_data.get("name") else "User",
-            "lastName": user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer",
+            "firstName": user_data.get("firstName") or (user_data.get("name", "").split()[0] if user_data.get("name") else "User"),
+            "lastName": user_data.get("lastName") or (user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer"),
             "email": user_data.get("email", "customer@example.com")
         }
     }
@@ -624,8 +626,10 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
 
     payload = {
         "paymentType": "DEPOSIT",
+        "paymentMethod": "BASIC_CARD",
         "amount": amount,
         "currency": "EUR",
+        "description": f"Reelzila {plan_name} Subscription - {credits_to_add} credits/month",
         "returnUrl": f"{frontend_url}/payment/success?subscription_id={subscription_id}",
         "errorUrl": f"{frontend_url}/payment/cancel?subscription_id={subscription_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
@@ -639,11 +643,10 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
         "referenceId": f"subscription_id={subscription_id};user_id={sub_request.userId};price_id={sub_request.priceId}",
         "customer": {
             "referenceId": sub_request.userId,
-            "firstName": user_data.get("name", "").split()[0] if user_data.get("name") else "User",
-            "lastName": user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer",
+            "firstName": user_data.get("firstName") or (user_data.get("name", "").split()[0] if user_data.get("name") else "User"),
+            "lastName": user_data.get("lastName") or (user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer"),
             "email": user_data.get("email", "customer@example.com")
-        },
-        "paymentMethod": "BASIC_CARD"
+        }
     }
 
     logger.info(f"[PAYTRUST] Initiating subscription request", extra={
@@ -2934,16 +2937,18 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
 
     payload = {
         "paymentType": "DEPOSIT",
+        "paymentMethod": "BASIC_CARD",
         "amount": verified_price,  # Use verified price from database
         "currency": "EUR",
+        "description": f"Reelzila Marketplace - {verified_title[:50]}",
         "returnUrl": f"{frontend_url}/marketplace/purchase/success?purchase_id={purchase_id}",
         "errorUrl": f"{frontend_url}/marketplace/purchase/cancel?purchase_id={purchase_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
         "referenceId": f"marketplace_purchase_id={purchase_id};user_id={user_id};seller_id={verified_seller_id};product_id={purchase_request.productId}",
         "customer": {
             "referenceId": user_id,
-            "firstName": user_data.get("name", "").split()[0] if user_data.get("name") else "User",
-            "lastName": user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer",
+            "firstName": user_data.get("firstName") or (user_data.get("name", "").split()[0] if user_data.get("name") else "User"),
+            "lastName": user_data.get("lastName") or (user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer"),
             "email": user_data.get("email", "customer@example.com")
         }
     }

@@ -224,12 +224,14 @@ FAL_MODELS = {
     "sora-2": {
         "t2v": "fal-ai/sora-2/text-to-video",
         "i2v": "fal-ai/sora-2/image-to-video/pro",
-        "image_param": "image_url"
+        "image_param": "image_url",
+        "duration_type": "int"  # Sora 2 expects duration as integer (4, 8, 12)
     },
     "kling-2.6": {
         "t2v": "fal-ai/kling-video/v2.6/pro/text-to-video",
         "i2v": "fal-ai/kling-video/v2.6/pro/image-to-video",
-        "image_param": "image_url"
+        "image_param": "image_url",
+        "duration_type": "int"  # Kling expects duration as integer
     },
     "ltx-2": {
         "t2v": "fal-ai/ltx-video",
@@ -1252,13 +1254,22 @@ async def generate_media(request: Request, video_request: VideoRequest):
                     # Remove empty or invalid image params
                     api_params.pop(param_name, None)
 
-        # Format duration with suffix if required by model (e.g., VEO 3.1 needs "8s" not "8")
-        duration_suffix = model_config.get("duration_suffix")
-        if duration_suffix and "duration" in api_params:
-            duration_val = str(api_params["duration"])
-            if not duration_val.endswith(duration_suffix):
-                api_params["duration"] = f"{duration_val}{duration_suffix}"
-                logger.info(f"Duration formatted to: {api_params['duration']}")
+        # Format duration based on model requirements
+        if "duration" in api_params:
+            duration_val = api_params["duration"]
+            duration_suffix = model_config.get("duration_suffix")
+            duration_type = model_config.get("duration_type")
+
+            if duration_suffix:
+                # VEO 3.1 needs "8s" format
+                duration_str = str(duration_val).rstrip('s')  # Remove any existing suffix
+                api_params["duration"] = f"{duration_str}{duration_suffix}"
+                logger.info(f"Duration formatted with suffix: {api_params['duration']}")
+            elif duration_type == "int":
+                # Sora 2, Kling need integer format
+                duration_str = str(duration_val).rstrip('s')  # Remove any suffix
+                api_params["duration"] = int(duration_str)
+                logger.info(f"Duration converted to int: {api_params['duration']}")
 
         # Select the appropriate model endpoint
         if "t2i" in model_config:

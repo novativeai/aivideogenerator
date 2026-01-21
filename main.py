@@ -573,6 +573,97 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
         logger.error(error_detail, extra={"payment_id": payment_id})
         raise HTTPException(status_code=500, detail=error_detail)
 
+
+class ConfirmPaymentRequest(BaseModel):
+    paymentId: str = Field(..., min_length=1)
+
+
+@app.post("/confirm-payment")
+@limiter.limit("10/minute")
+async def confirm_payment(request: Request, confirm_request: ConfirmPaymentRequest):
+    """
+    Confirm a payment after successful redirect from PayTrust.
+    This is a fallback when webhooks don't work properly.
+    Called by frontend when user lands on success page.
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized.")
+
+    # Verify user authentication
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    token = auth_header.split("Bearer ")[1]
+    try:
+        decoded_token = auth.verify_id_token(token)
+        user_id = decoded_token['uid']
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+
+    payment_id = confirm_request.paymentId
+    logger.info(f"[CONFIRM-PAYMENT] User {user_id} confirming payment {payment_id}")
+
+    # Get the payment document
+    payment_ref = db.collection('users').document(user_id).collection('payments').document(payment_id)
+    payment_doc = payment_ref.get()
+
+    if not payment_doc.exists:
+        logger.warning(f"[CONFIRM-PAYMENT] Payment not found: {payment_id}")
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    payment_data = payment_doc.to_dict()
+    current_status = payment_data.get('status')
+
+    # If already paid, return success
+    if current_status == 'paid':
+        logger.info(f"[CONFIRM-PAYMENT] Payment {payment_id} already marked as paid")
+        return {
+            "status": "paid",
+            "credits": payment_data.get('creditsPurchased', 0),
+            "message": "Payment already confirmed"
+        }
+
+    # If cancelled or failed, don't allow confirmation
+    if current_status in ['cancelled', 'failed']:
+        logger.warning(f"[CONFIRM-PAYMENT] Cannot confirm {current_status} payment {payment_id}")
+        raise HTTPException(status_code=400, detail=f"Payment is {current_status}")
+
+    # Only confirm pending payments
+    if current_status != 'pending':
+        logger.warning(f"[CONFIRM-PAYMENT] Unexpected status {current_status} for payment {payment_id}")
+        raise HTTPException(status_code=400, detail=f"Invalid payment status: {current_status}")
+
+    # Mark as paid and add credits
+    credits_to_add = payment_data.get('creditsPurchased', 0)
+
+    try:
+        # Update payment status
+        payment_ref.update({
+            'status': 'paid',
+            'paidAt': firestore.SERVER_TIMESTAMP,
+            'confirmedBy': 'frontend_redirect'
+        })
+
+        # Add credits to user
+        user_ref = db.collection('users').document(user_id)
+        user_ref.update({
+            'credits': firestore.Increment(credits_to_add)
+        })
+
+        logger.info(f"[CONFIRM-PAYMENT] ✅ Payment {payment_id} confirmed. Added {credits_to_add} credits to user {user_id}")
+
+        return {
+            "status": "paid",
+            "credits": credits_to_add,
+            "message": "Payment confirmed successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"[CONFIRM-PAYMENT] Error confirming payment {payment_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to confirm payment: {str(e)}")
+
+
 @app.post("/create-subscription")
 @limiter.limit("3/minute")
 async def create_subscription(request: Request, sub_request: SubscriptionRequest):

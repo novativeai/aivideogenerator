@@ -664,6 +664,154 @@ async def confirm_payment(request: Request, confirm_request: ConfirmPaymentReque
         raise HTTPException(status_code=500, detail=f"Failed to confirm payment: {str(e)}")
 
 
+class ConfirmMarketplacePurchaseRequest(BaseModel):
+    purchaseId: str = Field(..., min_length=1)
+
+
+@app.post("/marketplace/confirm-purchase")
+@limiter.limit("10/minute")
+async def confirm_marketplace_purchase(request: Request, confirm_request: ConfirmMarketplacePurchaseRequest):
+    """
+    Confirm a marketplace purchase after successful redirect from PayTrust.
+    This is a fallback when webhooks don't work properly.
+    Called by frontend when user lands on success page.
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized.")
+
+    # Verify user authentication
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    token = auth_header.split("Bearer ")[1]
+    try:
+        decoded_token = auth.verify_id_token(token)
+        user_id = decoded_token['uid']
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+
+    purchase_id = confirm_request.purchaseId
+    logger.info(f"[CONFIRM-MARKETPLACE] User {user_id} confirming purchase {purchase_id}")
+
+    # Get the purchase document
+    purchase_ref = db.collection('marketplace_purchases').document(purchase_id)
+    purchase_doc = purchase_ref.get()
+
+    if not purchase_doc.exists:
+        logger.warning(f"[CONFIRM-MARKETPLACE] Purchase not found: {purchase_id}")
+        raise HTTPException(status_code=404, detail="Purchase not found")
+
+    purchase_data = purchase_doc.to_dict()
+
+    # Verify the user is the buyer
+    if purchase_data.get('buyerId') != user_id:
+        logger.warning(f"[CONFIRM-MARKETPLACE] User {user_id} is not buyer for purchase {purchase_id}")
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    current_status = purchase_data.get('status')
+
+    # If already completed, return success with existing data
+    if current_status == 'completed':
+        logger.info(f"[CONFIRM-MARKETPLACE] Purchase {purchase_id} already completed")
+        return {
+            "status": "completed",
+            "title": purchase_data.get('title'),
+            "price": purchase_data.get('price'),
+            "videoUrl": purchase_data.get('videoUrl'),
+            "message": "Purchase already confirmed"
+        }
+
+    # If cancelled or failed, don't allow confirmation
+    if current_status in ['cancelled', 'failed', 'amount_mismatch']:
+        logger.warning(f"[CONFIRM-MARKETPLACE] Cannot confirm {current_status} purchase {purchase_id}")
+        raise HTTPException(status_code=400, detail=f"Purchase is {current_status}")
+
+    # Only confirm pending purchases
+    if current_status != 'pending':
+        logger.warning(f"[CONFIRM-MARKETPLACE] Unexpected status {current_status} for purchase {purchase_id}")
+        raise HTTPException(status_code=400, detail=f"Invalid purchase status: {current_status}")
+
+    try:
+        seller_id = purchase_data.get('sellerId')
+        seller_earnings = purchase_data.get('sellerEarnings', 0)
+        product_title = purchase_data.get('title', 'Unknown Product')
+        product_id = purchase_data.get('productId')
+
+        # 1. Update purchase status to completed
+        purchase_ref.update({
+            "status": "completed",
+            "completedAt": firestore.SERVER_TIMESTAMP,
+            "confirmedBy": "frontend_redirect"
+        })
+
+        # 2. Credit seller's balance (in seller_balance subcollection)
+        seller_ref = db.collection('users').document(seller_id)
+        seller_doc = seller_ref.get()
+        if seller_doc.exists:
+            # Update seller_balance/current with proper balance fields
+            balance_ref = seller_ref.collection('seller_balance').document('current')
+            balance_ref.set({
+                'totalEarned': firestore.Increment(seller_earnings),
+                'availableBalance': firestore.Increment(seller_earnings),
+                'lastTransactionDate': firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            logger.info(f"[CONFIRM-MARKETPLACE] Credited seller {seller_id} with €{seller_earnings}")
+
+            # 3. Create transaction record for seller
+            seller_ref.collection('seller_transactions').add({
+                "type": "sale",
+                "amount": seller_earnings,
+                "productId": product_id,
+                "productTitle": product_title,
+                "buyerId": user_id,
+                "purchaseId": purchase_id,
+                "createdAt": firestore.SERVER_TIMESTAMP
+            })
+
+        # 4. Update product sales count in marketplace_listings
+        if product_id:
+            product_ref = db.collection('marketplace_listings').document(product_id)
+            product_doc_check = product_ref.get()
+            if product_doc_check.exists:
+                product_ref.update({
+                    "salesCount": firestore.Increment(1)
+                })
+
+        # 5. Create purchased_videos record for buyer (for frontend display)
+        buyer_ref = db.collection('users').document(user_id)
+        buyer_ref.collection('purchased_videos').add({
+            "productId": product_id,
+            "title": product_title,
+            "videoUrl": purchase_data.get('videoUrl'),
+            "thumbnailUrl": purchase_data.get('thumbnailUrl'),
+            "price": purchase_data.get('price'),
+            "sellerName": purchase_data.get('sellerName'),
+            "sellerId": seller_id,
+            "purchaseId": purchase_id,
+            "purchasedAt": firestore.SERVER_TIMESTAMP
+        })
+        logger.info(f"[CONFIRM-MARKETPLACE] Created purchased_videos record for buyer {user_id}")
+
+        logger.info(f"[CONFIRM-MARKETPLACE] ✅ Purchase {purchase_id} confirmed successfully", extra={
+            "buyer_id": user_id,
+            "seller_id": seller_id,
+            "seller_earnings": seller_earnings
+        })
+
+        return {
+            "status": "completed",
+            "title": product_title,
+            "price": purchase_data.get('price'),
+            "videoUrl": purchase_data.get('videoUrl'),
+            "message": "Purchase confirmed successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"[CONFIRM-MARKETPLACE] Error confirming purchase {purchase_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to confirm purchase: {str(e)}")
+
+
 @app.post("/create-subscription")
 @limiter.limit("3/minute")
 async def create_subscription(request: Request, sub_request: SubscriptionRequest):

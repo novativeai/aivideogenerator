@@ -22,7 +22,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import resend
-from email_templates import get_new_withdrawal_request_email, get_payout_approved_email, get_payout_completed_email, get_payout_rejected_email
+from email_templates import get_new_withdrawal_request_email, get_payout_approved_email, get_payout_completed_email, get_payout_rejected_email, get_marketplace_purchase_confirmation_email
 
 # Configure logging
 logging.basicConfig(
@@ -798,6 +798,43 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
             "seller_id": seller_id,
             "seller_earnings": seller_earnings
         })
+
+        # Send purchase confirmation email to buyer
+        if RESEND_API_KEY:
+            try:
+                # Get buyer details
+                buyer_ref = db.collection('users').document(user_id)
+                buyer_doc = buyer_ref.get()
+                if buyer_doc.exists:
+                    buyer_data = buyer_doc.to_dict()
+                    buyer_email = buyer_data.get('email')
+                    buyer_name = buyer_data.get('displayName') or buyer_data.get('name') or 'Customer'
+
+                    if buyer_email:
+                        email_html = get_marketplace_purchase_confirmation_email(
+                            buyer_name=buyer_name,
+                            product_title=product_title,
+                            price=purchase_data.get('price', 0),
+                            seller_name=purchase_data.get('sellerName', 'Seller'),
+                            video_url=purchase_data.get('videoUrl')
+                        )
+
+                        email_params: resend.Emails.SendParams = {
+                            "from": RESEND_FROM_EMAIL,
+                            "to": [buyer_email],
+                            "subject": f"✓ Purchase Confirmed - {product_title}",
+                            "html": email_html,
+                            "tags": [
+                                {"name": "type", "value": "marketplace_purchase_confirmation"},
+                                {"name": "buyer_id", "value": user_id},
+                            ],
+                        }
+
+                        email_response = resend.Emails.send(email_params)
+                        logger.info(f"[CONFIRM-MARKETPLACE] Purchase confirmation email sent to {buyer_email}: {email_response.get('id')}")
+            except Exception as email_err:
+                logger.error(f"[CONFIRM-MARKETPLACE] Failed to send purchase confirmation email: {email_err}")
+                # Don't fail the purchase if email fails
 
         return {
             "status": "completed",
@@ -2784,12 +2821,57 @@ async def create_payout_request(request: Request, payout_data: PayoutRequestCrea
         })
 
         logger.info(f"Payout request created for user {user_id}: €{payout_data.amount}")
+
+        # Send email notification to admin with bank details
+        email_sent = False
+        if RESEND_API_KEY and ADMIN_EMAIL:
+            try:
+                user_data = user_doc.to_dict() if user_doc.exists else {}
+                seller_name = user_data.get('displayName') or user_data.get('name') or 'Unknown Seller'
+
+                bank_details_dict = {
+                    'iban': payout_data.bankDetails.iban.replace(' ', '').upper(),
+                    'accountHolder': payout_data.bankDetails.accountHolder.strip(),
+                    'bankName': payout_data.bankDetails.bankName.strip() if payout_data.bankDetails.bankName else 'Not specified',
+                    'bic': payout_data.bankDetails.bic.replace(' ', '').upper() if payout_data.bankDetails.bic else 'Not specified'
+                }
+
+                email_html = get_new_withdrawal_request_email(
+                    seller_name=seller_name,
+                    seller_email=user_email,
+                    amount=payout_data.amount,
+                    seller_id=user_id,
+                    request_id=payout_ref.id,
+                    bank_details=bank_details_dict
+                )
+
+                email_params: resend.Emails.SendParams = {
+                    "from": RESEND_FROM_EMAIL,
+                    "to": [ADMIN_EMAIL],
+                    "subject": f"💰 New Withdrawal Request - €{payout_data.amount:.2f} from {seller_name}",
+                    "html": email_html,
+                    "tags": [
+                        {"name": "type", "value": "withdrawal_request"},
+                        {"name": "seller_id", "value": user_id},
+                    ],
+                }
+
+                email_response = resend.Emails.send(email_params)
+                logger.info(f"Withdrawal notification email sent for request {payout_ref.id}: {email_response.get('id')}")
+                email_sent = True
+            except Exception as email_err:
+                logger.error(f"Failed to send withdrawal notification email: {email_err}")
+                # Don't fail the request if email fails - withdrawal is still created
+        else:
+            logger.warning("Email not configured - skipping withdrawal notification")
+
         return {
             "message": "Payout request created successfully",
             "requestId": payout_ref.id,
             "amount": payout_data.amount,
             "accountHolder": payout_data.bankDetails.accountHolder,
-            "status": "pending"
+            "status": "pending",
+            "emailSent": email_sent
         }
     except HTTPException:
         raise

@@ -2,6 +2,193 @@
 Email templates for SendGrid notifications
 """
 
+
+def get_marketplace_purchase_confirmation_email(buyer_name: str, product_title: str, price: float, seller_name: str, video_url: str = None) -> str:
+    """Email template for marketplace purchase confirmation to buyer"""
+    video_section = ""
+    if video_url:
+        video_section = f"""
+                    <div style="margin: 30px 0; text-align: center;">
+                        <a href="{video_url}"
+                           style="display: inline-block; background-color: #D4FF4F; color: #000; padding: 16px 32px;
+                                  text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">
+                            Download Your Video
+                        </a>
+                    </div>
+        """
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Purchase Confirmation</title>
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                background-color: #000;
+            }}
+            .container {{
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 20px;
+            }}
+            .email-wrapper {{
+                background-color: #111;
+                border-radius: 12px;
+                overflow: hidden;
+                border: 1px solid #333;
+            }}
+            .header {{
+                background: linear-gradient(135deg, #1a1a1a 0%, #0a0a0a 100%);
+                padding: 40px 20px;
+                text-align: center;
+                border-bottom: 1px solid #333;
+            }}
+            .header h1 {{
+                font-size: 28px;
+                margin-bottom: 10px;
+                font-weight: 600;
+                color: #D4FF4F;
+            }}
+            .header p {{
+                font-size: 16px;
+                color: #888;
+            }}
+            .content {{
+                padding: 40px 30px;
+                background-color: #111;
+            }}
+            .greeting {{
+                font-size: 16px;
+                margin-bottom: 20px;
+                color: #fff;
+            }}
+            .message {{
+                font-size: 15px;
+                line-height: 1.8;
+                color: #aaa;
+                margin-bottom: 30px;
+            }}
+            .purchase-box {{
+                background-color: #1a1a1a;
+                border: 1px solid #333;
+                padding: 25px;
+                margin: 30px 0;
+                border-radius: 8px;
+            }}
+            .purchase-box h2 {{
+                color: #D4FF4F;
+                font-size: 14px;
+                text-transform: uppercase;
+                margin-bottom: 20px;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+            }}
+            .purchase-row {{
+                display: flex;
+                justify-content: space-between;
+                padding: 12px 0;
+                border-bottom: 1px solid #333;
+                font-size: 14px;
+            }}
+            .purchase-row:last-child {{
+                border-bottom: none;
+            }}
+            .purchase-label {{
+                color: #888;
+                font-weight: 500;
+            }}
+            .purchase-value {{
+                color: #fff;
+                font-weight: 600;
+            }}
+            .amount {{
+                font-size: 28px;
+                color: #D4FF4F;
+                font-weight: 700;
+                margin: 20px 0;
+                text-align: center;
+            }}
+            .footer {{
+                background-color: #0a0a0a;
+                padding: 30px;
+                text-align: center;
+                border-top: 1px solid #333;
+                font-size: 12px;
+                color: #666;
+            }}
+            .footer p {{
+                margin-bottom: 10px;
+            }}
+            .footer a {{
+                color: #D4FF4F;
+                text-decoration: none;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="email-wrapper">
+                <div class="header">
+                    <h1>✓ Purchase Confirmed!</h1>
+                    <p>Thank you for your purchase on Reelzila</p>
+                </div>
+
+                <div class="content">
+                    <p class="greeting">Hi {buyer_name},</p>
+
+                    <p class="message">
+                        Great news! Your purchase has been completed successfully. You now have access to your video.
+                    </p>
+
+                    <div class="purchase-box">
+                        <h2>📦 Purchase Details</h2>
+
+                        <div class="purchase-row">
+                            <span class="purchase-label">Video:</span>
+                            <span class="purchase-value">{product_title}</span>
+                        </div>
+
+                        <div class="purchase-row">
+                            <span class="purchase-label">Seller:</span>
+                            <span class="purchase-value">{seller_name}</span>
+                        </div>
+
+                        <div class="purchase-row">
+                            <span class="purchase-label">Amount Paid:</span>
+                            <span class="purchase-value" style="color: #D4FF4F;">€{price:.2f}</span>
+                        </div>
+                    </div>
+
+                    {video_section}
+
+                    <p class="message" style="margin-top: 30px;">
+                        You can also access your purchased videos anytime from your
+                        <a href="https://reelzila.studio/account" style="color: #D4FF4F;">account dashboard</a>.
+                    </p>
+                </div>
+
+                <div class="footer">
+                    <p><strong style="color: #D4FF4F;">reelzila</strong> - AI Video Generation Platform</p>
+                    <p>Questions? Contact us at <a href="mailto:support@reelzila.studio">support@reelzila.studio</a></p>
+                    <p style="margin-top: 15px;">© 2024 Reelzila. All rights reserved.</p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
 def get_payout_approved_email(seller_name: str, amount: float, account_holder: str) -> str:
     """Email template for payout approval notification"""
     return f"""

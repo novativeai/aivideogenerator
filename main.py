@@ -22,7 +22,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import resend
-from email_templates import get_new_withdrawal_request_email, get_payout_approved_email, get_payout_completed_email, get_payout_rejected_email, get_marketplace_purchase_confirmation_email
+from email_templates import get_new_withdrawal_request_email, get_payout_approved_email, get_payout_completed_email, get_payout_rejected_email, get_marketplace_purchase_confirmation_email, get_seller_sale_notification_email
 
 # Configure logging
 logging.basicConfig(
@@ -714,6 +714,35 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
     # If already completed, return success with existing data
     if current_status == 'completed':
         logger.info(f"[CONFIRM-MARKETPLACE] Purchase {purchase_id} already completed")
+
+        # Still send buyer email if not already sent (handles webhook race condition)
+        if not purchase_data.get('buyerEmailSent') and RESEND_API_KEY:
+            try:
+                buyer_doc = db.collection('users').document(user_id).get()
+                if buyer_doc.exists:
+                    buyer_data = buyer_doc.to_dict()
+                    buyer_email = buyer_data.get('email')
+                    buyer_name = buyer_data.get('displayName') or buyer_data.get('name') or 'Customer'
+
+                    if buyer_email:
+                        email_html = get_marketplace_purchase_confirmation_email(
+                            buyer_name=buyer_name,
+                            product_title=purchase_data.get('title', 'Video'),
+                            price=purchase_data.get('price', 0),
+                            seller_name=purchase_data.get('sellerName', 'Seller'),
+                            video_url=purchase_data.get('videoUrl')
+                        )
+                        resend.Emails.send({
+                            "from": RESEND_FROM_EMAIL,
+                            "to": [buyer_email],
+                            "subject": f"✓ Purchase Confirmed - {purchase_data.get('title', 'Video')}",
+                            "html": email_html,
+                        })
+                        purchase_ref.update({"buyerEmailSent": True})
+                        logger.info(f"[CONFIRM-MARKETPLACE] Sent delayed buyer email for already-completed purchase {purchase_id}")
+            except Exception as email_err:
+                logger.error(f"[CONFIRM-MARKETPLACE] Failed to send delayed buyer email: {email_err}")
+
         return {
             "status": "completed",
             "title": purchase_data.get('title'),
@@ -799,10 +828,10 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
             "seller_earnings": seller_earnings
         })
 
-        # Send purchase confirmation email to buyer
+        # Send emails: buyer confirmation + seller sale notification
         if RESEND_API_KEY:
+            # 1. Send buyer confirmation email
             try:
-                # Get buyer details
                 buyer_ref = db.collection('users').document(user_id)
                 buyer_doc = buyer_ref.get()
                 if buyer_doc.exists:
@@ -819,7 +848,7 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
                             video_url=purchase_data.get('videoUrl')
                         )
 
-                        email_params: resend.Emails.SendParams = {
+                        resend.Emails.send({
                             "from": RESEND_FROM_EMAIL,
                             "to": [buyer_email],
                             "subject": f"✓ Purchase Confirmed - {product_title}",
@@ -828,13 +857,42 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
                                 {"name": "type", "value": "marketplace_purchase_confirmation"},
                                 {"name": "buyer_id", "value": user_id},
                             ],
-                        }
-
-                        email_response = resend.Emails.send(email_params)
-                        logger.info(f"[CONFIRM-MARKETPLACE] Purchase confirmation email sent to {buyer_email}: {email_response.get('id')}")
+                        })
+                        # Mark buyer email as sent to prevent duplicate
+                        purchase_ref.update({"buyerEmailSent": True})
+                        logger.info(f"[CONFIRM-MARKETPLACE] Buyer confirmation email sent to {buyer_email}")
             except Exception as email_err:
-                logger.error(f"[CONFIRM-MARKETPLACE] Failed to send purchase confirmation email: {email_err}")
-                # Don't fail the purchase if email fails
+                logger.error(f"[CONFIRM-MARKETPLACE] Failed to send buyer email: {email_err}")
+
+            # 2. Send seller sale notification email
+            try:
+                if seller_doc.exists:
+                    seller_data = seller_doc.to_dict()
+                    seller_email = seller_data.get('email')
+                    seller_name = seller_data.get('displayName') or seller_data.get('name') or 'Seller'
+
+                    if seller_email:
+                        seller_email_html = get_seller_sale_notification_email(
+                            seller_name=seller_name,
+                            product_title=product_title,
+                            price=purchase_data.get('price', 0),
+                            earnings=seller_earnings,
+                            buyer_name=buyer_name if 'buyer_name' in dir() else 'A customer'
+                        )
+
+                        resend.Emails.send({
+                            "from": RESEND_FROM_EMAIL,
+                            "to": [seller_email],
+                            "subject": f"🎉 New Sale! {product_title}",
+                            "html": seller_email_html,
+                            "tags": [
+                                {"name": "type", "value": "seller_sale_notification"},
+                                {"name": "seller_id", "value": seller_id},
+                            ],
+                        })
+                        logger.info(f"[CONFIRM-MARKETPLACE] Seller sale notification sent to {seller_email}")
+            except Exception as email_err:
+                logger.error(f"[CONFIRM-MARKETPLACE] Failed to send seller notification: {email_err}")
 
         return {
             "status": "completed",

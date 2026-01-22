@@ -189,6 +189,124 @@ def get_marketplace_purchase_confirmation_email(buyer_name: str, product_title: 
     """
 
 
+def get_seller_sale_notification_email(seller_name: str, product_title: str, price: float, earnings: float, buyer_name: str = "A customer") -> str:
+    """Email template for notifying seller of a new sale"""
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>New Sale!</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                background-color: #000;
+            }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .email-wrapper {{
+                background-color: #111;
+                border-radius: 12px;
+                overflow: hidden;
+                border: 1px solid #333;
+            }}
+            .header {{
+                background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+                padding: 40px 20px;
+                text-align: center;
+            }}
+            .header h1 {{ font-size: 28px; margin-bottom: 10px; font-weight: 600; color: #fff; }}
+            .header p {{ font-size: 16px; color: rgba(255,255,255,0.9); }}
+            .content {{ padding: 40px 30px; background-color: #111; }}
+            .greeting {{ font-size: 16px; margin-bottom: 20px; color: #fff; }}
+            .sale-box {{
+                background: linear-gradient(135deg, #22c55e20 0%, #16a34a20 100%);
+                border: 1px solid #22c55e50;
+                padding: 25px;
+                margin: 30px 0;
+                border-radius: 8px;
+                text-align: center;
+            }}
+            .earnings {{ font-size: 42px; color: #22c55e; font-weight: 700; margin: 10px 0; }}
+            .earnings-label {{ font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 1px; }}
+            .details {{
+                background-color: #1a1a1a;
+                border: 1px solid #333;
+                padding: 20px;
+                margin: 20px 0;
+                border-radius: 8px;
+            }}
+            .detail-row {{
+                display: flex;
+                justify-content: space-between;
+                padding: 10px 0;
+                border-bottom: 1px solid #333;
+                font-size: 14px;
+            }}
+            .detail-row:last-child {{ border-bottom: none; }}
+            .detail-label {{ color: #888; }}
+            .detail-value {{ color: #fff; font-weight: 600; }}
+            .footer {{
+                background-color: #0a0a0a;
+                padding: 30px;
+                text-align: center;
+                border-top: 1px solid #333;
+                font-size: 12px;
+                color: #666;
+            }}
+            .footer a {{ color: #D4FF4F; text-decoration: none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="email-wrapper">
+                <div class="header">
+                    <h1>🎉 You Made a Sale!</h1>
+                    <p>Congratulations on your new sale</p>
+                </div>
+                <div class="content">
+                    <p class="greeting">Hi {seller_name},</p>
+                    <p style="color: #aaa; margin-bottom: 20px;">Great news! Someone just purchased your video on Reelzila.</p>
+
+                    <div class="sale-box">
+                        <div class="earnings-label">Your Earnings</div>
+                        <div class="earnings">€{earnings:.2f}</div>
+                    </div>
+
+                    <div class="details">
+                        <div class="detail-row">
+                            <span class="detail-label">Video Sold:</span>
+                            <span class="detail-value">{product_title}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Sale Price:</span>
+                            <span class="detail-value">€{price:.2f}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Buyer:</span>
+                            <span class="detail-value">{buyer_name}</span>
+                        </div>
+                    </div>
+
+                    <p style="color: #888; font-size: 14px; margin-top: 20px;">
+                        Your earnings have been added to your seller balance. You can request a withdrawal from your
+                        <a href="https://reelzila.studio/account" style="color: #D4FF4F;">account dashboard</a>.
+                    </p>
+                </div>
+                <div class="footer">
+                    <p><strong style="color: #D4FF4F;">reelzila</strong> - AI Video Generation Platform</p>
+                    <p>Keep creating amazing content!</p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
 def get_payout_approved_email(seller_name: str, amount: float, account_holder: str) -> str:
     """Email template for payout approval notification"""
     return f"""

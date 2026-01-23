@@ -856,6 +856,22 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
         })
         logger.info(f"[CONFIRM-MARKETPLACE] Created purchased_videos record for buyer {user_id}")
 
+        # 6. Create payment record for buyer's billing history
+        buyer_ref.collection('payments').add({
+            "amount": purchase_data.get('price'),
+            "createdAt": firestore.SERVER_TIMESTAMP,
+            "status": "paid",
+            "type": "Marketplace Purchase",
+            "productTitle": product_title,
+            "productId": product_id,
+            "sellerId": seller_id,
+            "sellerName": purchase_data.get('sellerName'),
+            "purchaseId": purchase_id,
+            "confirmedBy": "frontend_redirect",
+            "paidAt": firestore.SERVER_TIMESTAMP
+        })
+        logger.info(f"[CONFIRM-MARKETPLACE] Created payment record for buyer {user_id} billing history")
+
         logger.info(f"[CONFIRM-MARKETPLACE] ✅ Purchase {purchase_id} confirmed successfully", extra={
             "buyer_id": user_id,
             "seller_id": seller_id,
@@ -1353,6 +1369,22 @@ async def paytrust_webhook(request: Request):
                             "purchasedAt": firestore.SERVER_TIMESTAMP
                         })
                         logger.info(f"Created purchased_videos record for buyer {buyer_id}")
+
+                        # 6. Create payment record for buyer's billing history
+                        buyer_ref.collection('payments').add({
+                            "amount": purchase_data.get('price'),
+                            "createdAt": firestore.SERVER_TIMESTAMP,
+                            "status": "paid",
+                            "type": "Marketplace Purchase",
+                            "productTitle": product_title,
+                            "productId": purchase_data.get('productId'),
+                            "sellerId": seller_id_from_purchase,
+                            "sellerName": purchase_data.get('sellerName'),
+                            "purchaseId": marketplace_purchase_id,
+                            "paytrustTransactionId": transaction_id,
+                            "paidAt": firestore.SERVER_TIMESTAMP
+                        })
+                        logger.info(f"Created payment record for buyer {buyer_id} billing history")
 
                         logger.info(f"Marketplace purchase {marketplace_purchase_id} completed successfully", extra={
                             "buyer_id": buyer_id,

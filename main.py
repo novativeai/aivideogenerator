@@ -1110,6 +1110,11 @@ async def paytrust_webhook(request: Request):
     """
     try:
         body = await request.body()
+        client_ip = request.client.host if request.client else 'unknown'
+
+        # --- Filter out internal Railway IPs (load balancer health checks) ---
+        # Railway internal IPs are in the 100.64.0.x range
+        is_internal_ip = client_ip.startswith('::ffff:100.64.') or client_ip.startswith('100.64.')
 
         # --- Webhook Signature Verification ---
         signature = request.headers.get("X-PayTrust-Signature") or request.headers.get("X-Signature")
@@ -1123,10 +1128,12 @@ async def paytrust_webhook(request: Request):
                 ).hexdigest()
 
                 if not hmac.compare_digest(signature, expected_signature):
-                    logger.warning(f"Invalid webhook signature received from {request.client.host if request.client else 'unknown'}")
+                    logger.warning(f"Invalid webhook signature received from {client_ip}")
                     raise HTTPException(status_code=401, detail="Invalid webhook signature")
             elif os.getenv('ENV') == 'production':
-                logger.warning(f"Webhook received without signature in production from {request.client.host if request.client else 'unknown'}")
+                # Only log warning for non-internal IPs (reduce noise from load balancer)
+                if not is_internal_ip:
+                    logger.warning(f"Webhook received without signature in production from {client_ip}")
                 raise HTTPException(status_code=401, detail="Missing webhook signature")
 
         payload = json.loads(body)

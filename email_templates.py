@@ -179,7 +179,7 @@ def get_marketplace_purchase_confirmation_email(buyer_name: str, product_title: 
 
                 <div class="footer">
                     <p><strong style="color: #D4FF4F;">reelzila</strong> - AI Video Generation Platform</p>
-                    <p>Questions? Contact us at <a href="mailto:support@reelzila.studio">support@reelzila.studio</a></p>
+                    <p>Questions? Contact us at <a href="mailto:contact@reelzila.studio">contact@reelzila.studio</a></p>
                     <p style="margin-top: 15px;">© 2024 Reelzila. All rights reserved.</p>
                 </div>
             </div>

@@ -205,11 +205,13 @@ class AdminTransactionRequest(BaseModel):
     status: str = Field(..., min_length=1, max_length=20)
 
 class AdminBillingUpdateRequest(BaseModel):
-    nameOnCard: str = Field(..., min_length=1, max_length=100)
-    address: str = Field(..., min_length=1, max_length=200)
-    city: str = Field(..., min_length=1, max_length=100)
-    state: str = Field(..., min_length=1, max_length=100)
-    validTill: str = Field(..., pattern=r'^\d{2}/\d{2}$', description="Expiry in MM/YY format")
+    nameOnCard: str | None = Field(None, max_length=100)
+    address: str | None = Field(None, max_length=200)
+    city: str | None = Field(None, max_length=100)
+    state: str | None = Field(None, max_length=100)
+    country: str | None = Field(None, max_length=100)
+    postCode: str | None = Field(None, max_length=20)
+    validTill: str | None = Field(None, pattern=r'^\d{2}/\d{2}$', description="Expiry in MM/YY format")
 
 # --- fal.ai Model Mapping ---
 # Each model has t2v (text-to-video), i2v (image-to-video), or t2i (text-to-image) endpoints
@@ -1869,7 +1871,14 @@ async def get_all_users(request: Request):
     users_docs = db.collection('users').stream()
     for user in users_docs:
         user_data = user.to_dict()
-        users_list.append({ "id": user.id, "email": user_data.get("email"), "plan": user_data.get("activePlan", "Starter Plan"), "generationCount": 0 })
+        # Count generations from subcollection
+        generations_count = len(list(db.collection('users').document(user.id).collection('generations').select([]).stream()))
+        users_list.append({
+            "id": user.id,
+            "email": user_data.get("email"),
+            "credits": user_data.get("credits", 0),
+            "generationCount": generations_count
+        })
     return users_list
 
 @app.post("/admin/users", dependencies=[admin_dependency])
@@ -1898,6 +1907,9 @@ async def get_user_details(request: Request, user_id: str):
         transactions.append(trans_data)
     user_profile = user_doc.to_dict()
     user_profile['name'] = user_profile.get('name', user_profile.get('email', ''))
+    # Count generations from subcollection
+    generations_count = len(list(db.collection('users').document(user_id).collection('generations').select([]).stream()))
+    user_profile['generationCount'] = generations_count
     return {"profile": user_profile, "transactions": transactions}
 
 @app.put("/admin/users/{user_id}", dependencies=[admin_dependency])
@@ -1910,7 +1922,8 @@ async def update_user_details(request: Request, user_id: str, user_update: Admin
 @app.put("/admin/users/{user_id}/billing", dependencies=[admin_dependency])
 @limiter.limit("20/minute")
 async def update_billing_info(request: Request, user_id: str, billing_update: AdminBillingUpdateRequest):
-    db.collection('users').document(user_id).update({"billingInfo": billing_update.dict()})
+    billing_data = {k: v for k, v in billing_update.dict().items() if v is not None}
+    db.collection('users').document(user_id).update({"billingInfo": billing_data})
     return {"message": "Billing information updated successfully."}
 
 @app.post("/admin/users/{user_id}/gift-credits", dependencies=[admin_dependency])

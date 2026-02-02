@@ -1172,8 +1172,13 @@ async def paytrust_webhook(request: Request):
         amount = event_data.get("amount")
         payment_type = event_data.get("paymentType")
 
+        # Extract payment method details (card info) from webhook
+        payment_method_details = event_data.get("paymentMethodDetails", {})
+
         logger.info(f"[PAYTRUST] Extracted fields: state={state}, transaction_id={transaction_id}, payment_id={payment_id}, amount={amount}, payment_type={payment_type}")
         logger.info(f"[PAYTRUST] Reference ID: {reference_id}")
+        if payment_method_details:
+            logger.info(f"[PAYTRUST] Payment method: brand={payment_method_details.get('cardBrand')}, masked={payment_method_details.get('customerAccountNumber')}")
 
         # Parse referenceId to extract metadata
         metadata = {}
@@ -1250,6 +1255,24 @@ async def paytrust_webhook(request: Request):
                     "paidAt": firestore.SERVER_TIMESTAMP
                 })
                 
+                # Store last payment method (card details) for subscription too
+                if payment_method_details:
+                    last_payment_method = {}
+                    masked_pan = payment_method_details.get("customerAccountNumber", "")
+                    if masked_pan:
+                        last_payment_method["last4"] = masked_pan[-4:] if len(masked_pan) >= 4 else masked_pan
+                        last_payment_method["maskedPan"] = masked_pan
+                    if payment_method_details.get("cardBrand"):
+                        last_payment_method["cardBrand"] = payment_method_details["cardBrand"]
+                    if payment_method_details.get("cardholderName"):
+                        last_payment_method["cardholderName"] = payment_method_details["cardholderName"]
+                    if payment_method_details.get("cardExpiryMonth") and payment_method_details.get("cardExpiryYear"):
+                        last_payment_method["expiryMonth"] = payment_method_details["cardExpiryMonth"]
+                        last_payment_method["expiryYear"] = payment_method_details["cardExpiryYear"]
+                    if last_payment_method:
+                        last_payment_method["updatedAt"] = firestore.SERVER_TIMESTAMP
+                        user_ref.update({"lastPaymentMethod": last_payment_method})
+
                 logger.info(f"Subscription payment successful for user {user_id}. Added {credits_to_add} credits.")
 
             elif payment_doc_id:
@@ -1285,6 +1308,26 @@ async def paytrust_webhook(request: Request):
                     # Verify credits were added
                     updated_user = user_ref.get().to_dict()
                     new_credit_balance = updated_user.get("credits", 0)
+
+                    # Store last payment method (card details) on user doc
+                    if payment_method_details:
+                        last_payment_method = {}
+                        masked_pan = payment_method_details.get("customerAccountNumber", "")
+                        if masked_pan:
+                            # Extract last 4 digits from masked PAN (e.g., "411111****1111" -> "1111")
+                            last_payment_method["last4"] = masked_pan[-4:] if len(masked_pan) >= 4 else masked_pan
+                            last_payment_method["maskedPan"] = masked_pan
+                        if payment_method_details.get("cardBrand"):
+                            last_payment_method["cardBrand"] = payment_method_details["cardBrand"]
+                        if payment_method_details.get("cardholderName"):
+                            last_payment_method["cardholderName"] = payment_method_details["cardholderName"]
+                        if payment_method_details.get("cardExpiryMonth") and payment_method_details.get("cardExpiryYear"):
+                            last_payment_method["expiryMonth"] = payment_method_details["cardExpiryMonth"]
+                            last_payment_method["expiryYear"] = payment_method_details["cardExpiryYear"]
+                        if last_payment_method:
+                            last_payment_method["updatedAt"] = firestore.SERVER_TIMESTAMP
+                            user_ref.update({"lastPaymentMethod": last_payment_method})
+                            logger.info(f"[PAYTRUST] Stored last payment method for user {user_id}: {last_payment_method.get('cardBrand')} ****{last_payment_method.get('last4')}")
 
                     logger.info(f"[PAYTRUST] ✅ ONE-TIME PAYMENT COMPLETE for user {user_id}")
                     logger.info(f"[PAYTRUST] Credits added: {credits_to_add}, New balance: {new_credit_balance}, Payment ID: {payment_doc_id}")
@@ -1394,6 +1437,24 @@ async def paytrust_webhook(request: Request):
                             "paidAt": firestore.SERVER_TIMESTAMP
                         })
                         logger.info(f"Created payment record for buyer {buyer_id} billing history")
+
+                        # Store last payment method (card details) for buyer
+                        if payment_method_details and buyer_id:
+                            last_payment_method = {}
+                            masked_pan = payment_method_details.get("customerAccountNumber", "")
+                            if masked_pan:
+                                last_payment_method["last4"] = masked_pan[-4:] if len(masked_pan) >= 4 else masked_pan
+                                last_payment_method["maskedPan"] = masked_pan
+                            if payment_method_details.get("cardBrand"):
+                                last_payment_method["cardBrand"] = payment_method_details["cardBrand"]
+                            if payment_method_details.get("cardholderName"):
+                                last_payment_method["cardholderName"] = payment_method_details["cardholderName"]
+                            if payment_method_details.get("cardExpiryMonth") and payment_method_details.get("cardExpiryYear"):
+                                last_payment_method["expiryMonth"] = payment_method_details["cardExpiryMonth"]
+                                last_payment_method["expiryYear"] = payment_method_details["cardExpiryYear"]
+                            if last_payment_method:
+                                last_payment_method["updatedAt"] = firestore.SERVER_TIMESTAMP
+                                buyer_ref.update({"lastPaymentMethod": last_payment_method})
 
                         logger.info(f"Marketplace purchase {marketplace_purchase_id} completed successfully", extra={
                             "buyer_id": buyer_id,
@@ -1906,7 +1967,11 @@ async def get_user_details(request: Request, user_id: str):
             trans_data['createdAt'] = trans_data['createdAt'].strftime('%d/%m/%Y')
         transactions.append(trans_data)
     user_profile = user_doc.to_dict()
-    user_profile['name'] = user_profile.get('name', user_profile.get('email', ''))
+    # Resolve display name: prefer firstName+lastName (frontend format), fall back to name, then email
+    first = user_profile.get('firstName', '')
+    last = user_profile.get('lastName', '')
+    full_name = f"{first} {last}".strip()
+    user_profile['name'] = full_name or user_profile.get('name', user_profile.get('email', ''))
     # Count generations from subcollection
     generations_count = len(list(db.collection('users').document(user_id).collection('generations').select([]).stream()))
     user_profile['generationCount'] = generations_count
@@ -1915,8 +1980,18 @@ async def get_user_details(request: Request, user_id: str):
 @app.put("/admin/users/{user_id}", dependencies=[admin_dependency])
 @limiter.limit("20/minute")
 async def update_user_details(request: Request, user_id: str, user_update: AdminUserUpdateRequest):
+    update_data: dict = {}
+    if user_update.email is not None:
+        update_data["email"] = user_update.email
+    if user_update.name is not None:
+        # Split into firstName/lastName to match frontend schema
+        parts = user_update.name.strip().split(" ", 1)
+        update_data["firstName"] = parts[0]
+        update_data["lastName"] = parts[1] if len(parts) > 1 else ""
+        update_data["name"] = user_update.name  # Keep for backward compat
     auth.update_user(user_id, email=user_update.email, display_name=user_update.name)
-    db.collection('users').document(user_id).update({"email": user_update.email, "name": user_update.name})
+    if update_data:
+        db.collection('users').document(user_id).update(update_data)
     return {"message": "User updated successfully"}
 
 @app.put("/admin/users/{user_id}/billing", dependencies=[admin_dependency])

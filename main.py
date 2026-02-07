@@ -92,10 +92,13 @@ PRICE_ID_TO_CREDITS = {
 
 import uuid
 
+MAX_BILLING_FIELD_LENGTH = 255
+
+
 def generate_paytrust_reference(metadata: dict) -> str:
     """
     Generate a 32-character hex reference ID for PayTrust.
-    Stores the metadata mapping in Firestore for webhook resolution.
+    NOTE: Caller must store the mapping in paytrust_references Firestore collection.
     """
     ref_id = uuid.uuid4().hex  # 32-char hex string
     return ref_id
@@ -105,15 +108,23 @@ def generate_paytrust_description(payment_id: str) -> str:
     """
     Generate a product description in the required format:
     'Payment' + 20-character ID where the 10th character is 'A'.
-    Format: 1005XXXXX A XXXXXXXXXX (20 chars total starting with 1005, 'A' at position 10)
+    Format: 1005XXXXXAXXXXXXXXXX (20 chars total starting with 1005, 'A' at position 10)
     """
+    if not payment_id:
+        payment_id = uuid.uuid4().hex
     # Use payment_id hash to generate deterministic digits
     hash_hex = hashlib.sha256(payment_id.encode()).hexdigest()
     # Convert hex to digits
     digits = ''.join(str(int(c, 16) % 10) for c in hash_hex)
     # Build: 1005 + 5 digits + A + 10 digits = 20 chars starting with 1005, A at pos 10
     code = f"1005{digits[:5]}A{digits[5:15]}"
+    assert len(code) == 20, f"Description code must be 20 chars, got {len(code)}"
     return f"Payment {code}"
+
+
+def _sanitize_field(value: str, max_len: int = MAX_BILLING_FIELD_LENGTH) -> str:
+    """Sanitize a billing field: strip whitespace and enforce max length."""
+    return value.strip()[:max_len] if value else ""
 
 
 def build_paytrust_customer(user_data: dict, user_id: str) -> dict:
@@ -122,46 +133,55 @@ def build_paytrust_customer(user_data: dict, user_id: str) -> dict:
     Reads from Firestore user profile: firstName, lastName, email, phone,
     address, city, postCode, country.
     """
-    first_name = user_data.get("firstName") or (
-        user_data.get("name", "").split()[0] if user_data.get("name") else "User"
+    first_name = _sanitize_field(
+        user_data.get("firstName") or (
+            user_data.get("name", "").split()[0] if user_data.get("name") else "User"
+        )
     )
-    last_name = user_data.get("lastName") or (
-        user_data.get("name", "").split()[-1]
-        if user_data.get("name") and len(user_data.get("name", "").split()) > 1
-        else "Customer"
+    last_name = _sanitize_field(
+        user_data.get("lastName") or (
+            user_data.get("name", "").split()[-1]
+            if user_data.get("name") and len(user_data.get("name", "").split()) > 1
+            else "Customer"
+        )
     )
     full_name = f"{first_name} {last_name}".strip()
+
+    # Use actual user email, never a placeholder
+    email = user_data.get("email", "").strip()
+    if not email or "@" not in email:
+        raise ValueError("User must have a valid email address for payment processing")
 
     customer = {
         "referenceId": user_id,
         "firstName": first_name,
         "lastName": last_name,
-        "email": user_data.get("email", "customer@example.com"),
+        "email": email,
         "full_name": full_name,
     }
 
-    # Add billing address fields if available
-    phone = user_data.get("phone", "").strip()
+    # Add billing address fields if available (sanitized + length-limited)
+    phone = _sanitize_field(user_data.get("phone", ""))
     if phone:
         customer["phone"] = phone
 
-    address = user_data.get("address", "").strip()
+    address = _sanitize_field(user_data.get("address", ""))
     if address:
         customer["street_address"] = address
 
-    city = user_data.get("city", "").strip()
+    city = _sanitize_field(user_data.get("city", ""))
     if city:
         customer["city"] = city
 
-    state = user_data.get("state", "").strip() or city  # Fallback to city
+    state = _sanitize_field(user_data.get("state", "")) or city
     if state:
         customer["state"] = state
 
-    post_code = user_data.get("postCode", "").strip()
+    post_code = _sanitize_field(user_data.get("postCode", ""))
     if post_code:
         customer["zip_code"] = post_code
 
-    country = user_data.get("country", "").strip()
+    country = _sanitize_field(user_data.get("country", ""))
     if country:
         customer["country"] = country
 
@@ -654,16 +674,13 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
         return {"paymentUrl": redirect_url}
 
     except requests.exceptions.HTTPError as e:
-        error_detail = f"PayTrust API Error ({e.response.status_code}): {e.response.text}"
-        logger.error(error_detail, extra={"payment_id": payment_id})
-        raise HTTPException(status_code=500, detail=error_detail)
+        logger.error(f"PayTrust API Error ({e.response.status_code}): {e.response.text}", extra={"payment_id": payment_id})
+        raise HTTPException(status_code=500, detail="Payment processing failed. Please try again or contact support.")
     except requests.exceptions.RequestException as e:
-        error_detail = f"Request failed: {str(e)}"
-        logger.error(error_detail, extra={"payment_id": payment_id})
-        raise HTTPException(status_code=500, detail=error_detail)
+        logger.error(f"Request failed: {str(e)}", extra={"payment_id": payment_id})
+        raise HTTPException(status_code=500, detail="Payment service temporarily unavailable. Please try again.")
     except Exception as e:
-        error_detail = f"Unexpected error: {str(e)}"
-        logger.error(error_detail, extra={"payment_id": payment_id})
+        logger.error(f"Unexpected error: {str(e)}", extra={"payment_id": payment_id})
         raise HTTPException(status_code=500, detail=error_detail)
 
 
@@ -727,24 +744,49 @@ async def confirm_payment(request: Request, confirm_request: ConfirmPaymentReque
         logger.warning(f"[CONFIRM-PAYMENT] Unexpected status {current_status} for payment {payment_id}")
         raise HTTPException(status_code=400, detail=f"Invalid payment status: {current_status}")
 
-    # Mark as paid and add credits
+    # Mark as paid and add credits using transaction to prevent race with webhook
     credits_to_add = payment_data.get('creditsPurchased', 0)
 
     try:
-        # Update payment status
-        payment_ref.update({
-            'status': 'paid',
-            'paidAt': firestore.SERVER_TIMESTAMP,
-            'confirmedBy': 'frontend_redirect'
-        })
+        @firestore.transactional
+        def confirm_in_transaction(transaction):
+            # Re-read inside transaction to get latest status
+            snapshot = payment_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return None
+            current = snapshot.to_dict()
+            if current.get('status') != 'pending':
+                # Already processed by webhook or another request
+                return {"status": current.get('status'), "credits": current.get('creditsPurchased', 0), "already_processed": True}
 
-        # Add credits to user
-        user_ref = db.collection('users').document(user_id)
-        user_ref.update({
-            'credits': firestore.Increment(credits_to_add)
-        })
+            transaction.update(payment_ref, {
+                'status': 'paid',
+                'paidAt': firestore.SERVER_TIMESTAMP,
+                'confirmedBy': 'frontend_redirect'
+            })
 
-        logger.info(f"[CONFIRM-PAYMENT] ✅ Payment {payment_id} confirmed. Added {credits_to_add} credits to user {user_id}")
+            user_ref = db.collection('users').document(user_id)
+            transaction.update(user_ref, {
+                'credits': firestore.Increment(credits_to_add)
+            })
+
+            return {"status": "paid", "credits": credits_to_add, "already_processed": False}
+
+        transaction = db.transaction()
+        result = confirm_in_transaction(transaction)
+
+        if result is None:
+            raise HTTPException(status_code=404, detail="Payment not found")
+
+        if result.get("already_processed"):
+            logger.info(f"[CONFIRM-PAYMENT] Payment {payment_id} already processed (status={result['status']}), skipping credit grant")
+            return {
+                "status": result["status"],
+                "credits": result["credits"],
+                "message": "Payment already confirmed"
+            }
+
+        logger.info(f"[CONFIRM-PAYMENT] ✅ Payment {payment_id} confirmed via transaction. Added {credits_to_add} credits to user {user_id}")
 
         return {
             "status": "paid",
@@ -752,9 +794,59 @@ async def confirm_payment(request: Request, confirm_request: ConfirmPaymentReque
             "message": "Payment confirmed successfully"
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[CONFIRM-PAYMENT] Error confirming payment {payment_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to confirm payment: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to confirm payment. Please try again.")
+
+
+class CancelPaymentRequest(BaseModel):
+    paymentId: str = Field(..., min_length=1)
+
+
+@app.post("/cancel-payment")
+@limiter.limit("10/minute")
+async def cancel_payment(request: Request, cancel_request: CancelPaymentRequest):
+    """
+    Cancel a pending payment via backend (called by cancel page).
+    Only the payment owner can cancel, and only if still pending.
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized.")
+
+    # Verify user authentication
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    token = auth_header.split("Bearer ")[1]
+    try:
+        decoded_token = auth.verify_id_token(token)
+        user_id = decoded_token['uid']
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    payment_id = cancel_request.paymentId
+    payment_ref = db.collection('users').document(user_id).collection('payments').document(payment_id)
+    payment_doc = payment_ref.get()
+
+    if not payment_doc.exists:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    payment_data = payment_doc.to_dict()
+
+    # Only cancel pending payments
+    if payment_data.get('status') != 'pending':
+        return {"status": payment_data.get('status'), "message": "Payment is no longer pending"}
+
+    payment_ref.update({
+        "status": "cancelled",
+        "cancelledAt": firestore.SERVER_TIMESTAMP
+    })
+
+    logger.info(f"[CANCEL-PAYMENT] Payment {payment_id} cancelled by user {user_id}")
+    return {"status": "cancelled", "message": "Payment cancelled"}
 
 
 class ConfirmMarketplacePurchaseRequest(BaseModel):
@@ -893,6 +985,20 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
         seller_earnings = purchase_data.get('sellerEarnings', 0)
         product_title = purchase_data.get('title', 'Unknown Product')
         product_id = purchase_data.get('productId')
+
+        # Atomic status check: re-read and verify still pending before updating
+        # This prevents race condition with webhook processing same purchase
+        fresh_doc = purchase_ref.get()
+        if fresh_doc.exists and fresh_doc.to_dict().get('status') != 'pending':
+            logger.info(f"[CONFIRM-MARKETPLACE] Purchase {purchase_id} already processed (status={fresh_doc.to_dict().get('status')}), skipping")
+            fresh_data = fresh_doc.to_dict()
+            return {
+                "status": fresh_data.get('status'),
+                "title": fresh_data.get('title'),
+                "price": fresh_data.get('price'),
+                "videoUrl": fresh_data.get('videoUrl'),
+                "message": "Purchase already processed"
+            }
 
         # 1. Update purchase status to completed
         purchase_ref.update({
@@ -1068,6 +1174,11 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
 
     user_data = user_doc.to_dict()
 
+    # Prevent duplicate active subscriptions
+    existing_subs = user_ref.collection('subscriptions').where('status', '==', 'active').limit(1).get()
+    if list(existing_subs):
+        raise HTTPException(status_code=400, detail="You already have an active subscription. Cancel it first before subscribing to a new plan.")
+
     # Get subscription details from price ID
     subscription_info = PRICE_ID_TO_CREDITS.get(sub_request.priceId)
     if not subscription_info:
@@ -1190,16 +1301,13 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
         return {"paymentUrl": redirect_url}
 
     except requests.exceptions.HTTPError as e:
-        error_detail = f"PayTrust API Error ({e.response.status_code}): {e.response.text}"
-        logger.error(error_detail, extra={"subscription_id": subscription_id})
-        raise HTTPException(status_code=500, detail=error_detail)
+        logger.error(f"PayTrust API Error ({e.response.status_code}): {e.response.text}", extra={"subscription_id": subscription_id})
+        raise HTTPException(status_code=500, detail="Subscription processing failed. Please try again or contact support.")
     except requests.exceptions.RequestException as e:
-        error_detail = f"Request failed: {str(e)}"
-        logger.error(error_detail, extra={"subscription_id": subscription_id})
-        raise HTTPException(status_code=500, detail=error_detail)
+        logger.error(f"Request failed: {str(e)}", extra={"subscription_id": subscription_id})
+        raise HTTPException(status_code=500, detail="Payment service temporarily unavailable. Please try again.")
     except Exception as e:
-        error_detail = f"Unexpected error: {str(e)}"
-        logger.error(error_detail, extra={"subscription_id": subscription_id})
+        logger.error(f"Unexpected error: {str(e)}", extra={"subscription_id": subscription_id})
         raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/paytrust-webhook")
@@ -1319,8 +1427,8 @@ async def paytrust_webhook(request: Request):
         logger.info(f"[PAYTRUST] Parsed metadata: user_id={user_id}, payment_doc_id={payment_doc_id}, subscription_doc_id={subscription_doc_id}, marketplace_purchase_id={marketplace_purchase_id}")
 
         if not user_id:
-            logger.warning(f"[PAYTRUST] No user_id in webhook payload - cannot process")
-            return {"status": "received", "warning": "No user_id found"}
+            logger.error(f"[PAYTRUST] No user_id in webhook payload - cannot process. Reference: {reference_id}")
+            raise HTTPException(status_code=400, detail="Invalid webhook: missing user_id in reference")
 
         user_ref = db.collection('users').document(user_id)
 
@@ -1337,18 +1445,51 @@ async def paytrust_webhook(request: Request):
 
                 # This is a subscription payment (initial or recurring)
                 subscription_info = PRICE_ID_TO_CREDITS.get(price_id) if price_id else None
-                credits_to_add = subscription_info["credits"] if subscription_info else 250  # Default to Creator plan
-                plan_name = subscription_info["planName"] if subscription_info else "Creator"
+                if not subscription_info:
+                    logger.error(f"[PAYTRUST] Unknown price_id '{price_id}' for subscription - cannot determine credits")
+                    if subscription_doc_id:
+                        sub_ref = user_ref.collection('subscriptions').document(subscription_doc_id)
+                        sub_ref.update({"status": "price_id_invalid", "failedAt": firestore.SERVER_TIMESTAMP})
+                    return {"status": "error", "message": f"Unknown price_id: {price_id}"}
+
+                credits_to_add = subscription_info["credits"]
+                plan_name = subscription_info["planName"]
+                expected_amount = subscription_info.get("amount", 22 if plan_name == "Creator" else 49)
+
+                # SECURITY: Validate webhook amount matches expected subscription amount
+                if amount and expected_amount and abs(float(amount) - float(expected_amount)) > 0.01:
+                    logger.error(f"[PAYTRUST] Subscription amount mismatch: expected {expected_amount}, got {amount}")
+                    if subscription_doc_id:
+                        sub_ref = user_ref.collection('subscriptions').document(subscription_doc_id)
+                        sub_ref.update({
+                            "status": "amount_mismatch",
+                            "expectedAmount": expected_amount,
+                            "receivedAmount": amount,
+                            "failedAt": firestore.SERVER_TIMESTAMP
+                        })
+                    raise HTTPException(status_code=400, detail="Subscription amount mismatch")
+
+                # Check subscription status to prevent double-processing
+                if subscription_doc_id:
+                    sub_ref = user_ref.collection('subscriptions').document(subscription_doc_id)
+                    sub_doc = sub_ref.get()
+                    if sub_doc.exists:
+                        sub_status = sub_doc.to_dict().get('status')
+                        if sub_status == 'active':
+                            # Renewal payment — still add credits but don't change plan
+                            logger.info(f"[PAYTRUST] Subscription {subscription_doc_id} already active — processing as renewal")
+                        elif sub_status != 'pending':
+                            logger.warning(f"[PAYTRUST] Unexpected subscription status: {sub_status}")
 
                 logger.info(f"Adding {credits_to_add} subscription credits for {plan_name} plan", extra={"user_id": user_id})
-                
+
                 # Update user credits and subscription status
                 user_ref.update({
                     "credits": firestore.Increment(credits_to_add),
                     "activePlan": plan_name,
                     "subscriptionStatus": "active"
                 })
-                
+
                 # Update subscription document if it exists
                 if subscription_doc_id:
                     sub_ref = user_ref.collection('subscriptions').document(subscription_doc_id)
@@ -1362,7 +1503,7 @@ async def paytrust_webhook(request: Request):
                         logger.info(f"Updated subscription document: {subscription_doc_id}")
                     else:
                         logger.warning(f"Subscription document not found: {subscription_doc_id}")
-                
+
                 # Create payment record for this subscription payment
                 user_ref.collection('payments').add({
                     "amount": amount,
@@ -1374,7 +1515,7 @@ async def paytrust_webhook(request: Request):
                     "paytrustTransactionId": transaction_id,
                     "paidAt": firestore.SERVER_TIMESTAMP
                 })
-                
+
                 # Store last payment method (card details) for subscription too
                 if payment_method_details:
                     last_payment_method = {}
@@ -1397,44 +1538,56 @@ async def paytrust_webhook(request: Request):
 
             elif payment_doc_id:
                 logger.info(f"[PAYTRUST] 💰 Type: ONE-TIME payment detected: {payment_doc_id}")
-                
+
                 # This is a one-time payment
                 payment_ref = user_ref.collection('payments').document(payment_doc_id)
                 payment_doc = payment_ref.get()
-                
+
                 if payment_doc.exists:
                     payment_data = payment_doc.to_dict()
+                    current_pay_status = payment_data.get('status')
                     credits_to_add = payment_data.get("creditsPurchased", 0)
 
-                    logger.info(f"[PAYTRUST] Payment doc found. Status: {payment_data.get('status')}, Credits to add: {credits_to_add}")
-                    logger.info(f"[PAYTRUST] Updating payment status pending -> paid and adding {credits_to_add} credits")
-                    
-                    # ✅ CRITICAL: Update payment status from pending to paid
-                    payment_ref.update({
-                        "status": "paid",
-                        "paidAt": firestore.SERVER_TIMESTAMP,
-                        "paytrustTransactionId": transaction_id
-                    })
-                    
-                    # Verify status was updated
-                    updated_payment = payment_ref.get().to_dict()
-                    logger.info(f"[PAYTRUST] Payment status after update: {updated_payment.get('status')}")
+                    # Prevent double-processing: skip if already paid
+                    if current_pay_status == 'paid':
+                        logger.info(f"[PAYTRUST] Payment {payment_doc_id} already paid, skipping credit grant")
+                    elif current_pay_status in ('failed', 'cancelled'):
+                        logger.warning(f"[PAYTRUST] Payment {payment_doc_id} is {current_pay_status}, skipping")
+                    else:
+                        # SECURITY: Validate webhook amount matches expected payment amount
+                        expected_amount = payment_data.get('amount', 0)
+                        if amount and expected_amount and abs(float(amount) - float(expected_amount)) > 0.01:
+                            logger.error(f"[PAYTRUST] Amount mismatch for payment {payment_doc_id}: expected {expected_amount}, got {amount}")
+                            payment_ref.update({
+                                "status": "amount_mismatch",
+                                "expectedAmount": expected_amount,
+                                "receivedAmount": amount,
+                                "failedAt": firestore.SERVER_TIMESTAMP
+                            })
+                            raise HTTPException(status_code=400, detail="Payment amount mismatch")
 
-                    # Add credits to user
-                    user_ref.update({
-                        "credits": firestore.Increment(credits_to_add)
-                    })
+                        logger.info(f"[PAYTRUST] Payment doc found. Status: {current_pay_status}, Credits to add: {credits_to_add}")
 
-                    # Verify credits were added
-                    updated_user = user_ref.get().to_dict()
-                    new_credit_balance = updated_user.get("credits", 0)
+                        # Update payment status from pending to paid
+                        payment_ref.update({
+                            "status": "paid",
+                            "paidAt": firestore.SERVER_TIMESTAMP,
+                            "paytrustTransactionId": transaction_id,
+                            "confirmedBy": "webhook"
+                        })
 
-                    # Store last payment method (card details) on user doc
+                        # Add credits to user
+                        user_ref.update({
+                            "credits": firestore.Increment(credits_to_add)
+                        })
+
+                        logger.info(f"[PAYTRUST] ✅ ONE-TIME PAYMENT COMPLETE for user {user_id}, credits added: {credits_to_add}")
+
+                    # Store last payment method (card details) on user doc (always update even if already paid)
                     if payment_method_details:
                         last_payment_method = {}
                         masked_pan = payment_method_details.get("customerAccountNumber", "")
                         if masked_pan:
-                            # Extract last 4 digits from masked PAN (e.g., "411111****1111" -> "1111")
                             last_payment_method["last4"] = masked_pan[-4:] if len(masked_pan) >= 4 else masked_pan
                             last_payment_method["maskedPan"] = masked_pan
                         if payment_method_details.get("cardBrand"):
@@ -1448,9 +1601,6 @@ async def paytrust_webhook(request: Request):
                             last_payment_method["updatedAt"] = firestore.SERVER_TIMESTAMP
                             user_ref.update({"lastPaymentMethod": last_payment_method})
                             logger.info(f"[PAYTRUST] Stored last payment method for user {user_id}: {last_payment_method.get('cardBrand')} ****{last_payment_method.get('last4')}")
-
-                    logger.info(f"[PAYTRUST] ✅ ONE-TIME PAYMENT COMPLETE for user {user_id}")
-                    logger.info(f"[PAYTRUST] Credits added: {credits_to_add}, New balance: {new_credit_balance}, Payment ID: {payment_doc_id}")
                 else:
                     logger.error(f"[PAYTRUST] ❌ Payment document NOT FOUND: {payment_doc_id}")
 
@@ -1481,51 +1631,64 @@ async def paytrust_webhook(request: Request):
                                 "receivedAmount": webhook_amount,
                                 "failedAt": firestore.SERVER_TIMESTAMP
                             })
-                            return {"status": "error", "message": "Amount mismatch"}
+                            raise HTTPException(status_code=400, detail="Marketplace purchase amount mismatch")
 
                         seller_id_from_purchase = purchase_data.get('sellerId')
                         seller_earnings = purchase_data.get('sellerEarnings', 0)
                         product_title = purchase_data.get('title', 'Unknown Product')
                         buyer_id = purchase_data.get('buyerId')
 
+                        # Verify seller still exists before proceeding
+                        seller_ref = db.collection('users').document(seller_id_from_purchase)
+                        seller_doc = seller_ref.get()
+                        if not seller_doc.exists:
+                            logger.error(f"[PAYTRUST] Seller {seller_id_from_purchase} not found — marking purchase as seller_missing")
+                            purchase_ref.update({
+                                "status": "seller_missing",
+                                "failedAt": firestore.SERVER_TIMESTAMP,
+                                "failureReason": "Seller account no longer exists"
+                            })
+                            raise HTTPException(status_code=500, detail="Seller account not found — payment requires manual review")
+
                         # 1. Update purchase status to completed
                         purchase_ref.update({
                             "status": "completed",
                             "completedAt": firestore.SERVER_TIMESTAMP,
-                            "paytrustTransactionId": transaction_id
+                            "paytrustTransactionId": transaction_id,
+                            "confirmedBy": "webhook"
                         })
 
                         # 2. Credit seller's balance (in seller_balance subcollection)
-                        seller_ref = db.collection('users').document(seller_id_from_purchase)
-                        seller_doc = seller_ref.get()
-                        if seller_doc.exists:
-                            # Update seller_balance/current with proper balance fields
-                            balance_ref = seller_ref.collection('seller_balance').document('current')
-                            balance_ref.set({
-                                'totalEarned': firestore.Increment(seller_earnings),
-                                'availableBalance': firestore.Increment(seller_earnings),
-                                'lastTransactionDate': firestore.SERVER_TIMESTAMP
-                            }, merge=True)
-                            logger.info(f"Credited seller {seller_id_from_purchase} with €{seller_earnings}")
+                        balance_ref = seller_ref.collection('seller_balance').document('current')
+                        balance_ref.set({
+                            'totalEarned': firestore.Increment(seller_earnings),
+                            'availableBalance': firestore.Increment(seller_earnings),
+                            'lastTransactionDate': firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+                        logger.info(f"Credited seller {seller_id_from_purchase} with €{seller_earnings}")
 
-                            # 3. Create transaction record for seller
-                            seller_ref.collection('seller_transactions').add({
-                                "type": "sale",
-                                "amount": seller_earnings,
-                                "productId": purchase_data.get('productId'),
-                                "productTitle": product_title,
-                                "buyerId": buyer_id,
-                                "purchaseId": marketplace_purchase_id,
-                                "createdAt": firestore.SERVER_TIMESTAMP
-                            })
+                        # 3. Create transaction record for seller
+                        seller_ref.collection('seller_transactions').add({
+                            "type": "sale",
+                            "amount": seller_earnings,
+                            "productId": purchase_data.get('productId'),
+                            "productTitle": product_title,
+                            "buyerId": buyer_id,
+                            "purchaseId": marketplace_purchase_id,
+                            "createdAt": firestore.SERVER_TIMESTAMP
+                        })
 
-                        # 4. Update product sales count in marketplace_listings
-                        product_ref = db.collection('marketplace_listings').document(purchase_data.get('productId'))
-                        product_doc_check = product_ref.get()
-                        if product_doc_check.exists:
-                            product_ref.update({
-                                "salesCount": firestore.Increment(1)
-                            })
+                        # 4. Update product sales count + mark as sold in marketplace_listings
+                        purchase_product_id = purchase_data.get('productId')
+                        if purchase_product_id:
+                            product_ref = db.collection('marketplace_listings').document(purchase_product_id)
+                            product_doc_check = product_ref.get()
+                            if product_doc_check.exists:
+                                product_ref.update({
+                                    "salesCount": firestore.Increment(1),
+                                    "status": "sold",
+                                    "soldAt": firestore.SERVER_TIMESTAMP
+                                })
 
                         # 5. Create purchased_videos record for buyer (for frontend display)
                         buyer_ref = db.collection('users').document(buyer_id)
@@ -1643,12 +1806,12 @@ async def paytrust_webhook(request: Request):
         return {"status": "received"}
 
     except HTTPException:
-        # Re-raise HTTP exceptions (signature validation failures)
+        # Re-raise HTTP exceptions (signature validation, amount mismatch, etc.)
         raise
     except Exception as e:
         logger.error(f"[PAYTRUST] ❌ WEBHOOK ERROR: {e}", exc_info=True)
-        # Return 200 even on errors to prevent PayTrust from retrying
-        return {"status": "error", "message": str(e)}
+        # Return 500 for transient errors so PayTrust will retry the webhook
+        raise HTTPException(status_code=500, detail="Internal webhook processing error")
 
 @app.get("/payment-status/{payment_id}")
 @limiter.limit("30/minute")
@@ -3702,16 +3865,13 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
         return {"paymentUrl": redirect_url, "purchaseId": purchase_id}
 
     except requests.exceptions.HTTPError as e:
-        error_detail = f"PayTrust API Error ({e.response.status_code}): {e.response.text}"
-        logger.error(error_detail, extra={"purchase_id": purchase_id})
-        # Update purchase status to failed
-        purchase_ref.update({"status": "payment_failed", "error": error_detail})
-        raise HTTPException(status_code=500, detail=error_detail)
+        logger.error(f"PayTrust API Error ({e.response.status_code}): {e.response.text}", extra={"purchase_id": purchase_id})
+        purchase_ref.update({"status": "payment_failed", "error": f"API error {e.response.status_code}"})
+        raise HTTPException(status_code=500, detail="Purchase payment failed. Please try again or contact support.")
     except requests.exceptions.RequestException as e:
-        error_detail = f"Request failed: {str(e)}"
-        logger.error(error_detail, extra={"purchase_id": purchase_id})
-        purchase_ref.update({"status": "payment_failed", "error": error_detail})
-        raise HTTPException(status_code=500, detail=error_detail)
+        logger.error(f"Request failed: {str(e)}", extra={"purchase_id": purchase_id})
+        purchase_ref.update({"status": "payment_failed", "error": "Request failed"})
+        raise HTTPException(status_code=500, detail="Payment service temporarily unavailable. Please try again.")
     except Exception as e:
         error_detail = f"Unexpected error: {str(e)}"
         logger.error(error_detail, extra={"purchase_id": purchase_id})

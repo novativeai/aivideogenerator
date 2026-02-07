@@ -88,6 +88,86 @@ PRICE_ID_TO_CREDITS = {
     "price_YOUR_TEAM_PLAN_PRICE_ID": {"credits": 1000, "planName": "Pro"}
 }
 
+# --- PayTrust Helpers ---
+
+import uuid
+
+def generate_paytrust_reference(metadata: dict) -> str:
+    """
+    Generate a 32-character hex reference ID for PayTrust.
+    Stores the metadata mapping in Firestore for webhook resolution.
+    """
+    ref_id = uuid.uuid4().hex  # 32-char hex string
+    return ref_id
+
+
+def generate_paytrust_description(payment_id: str) -> str:
+    """
+    Generate a product description in the required format:
+    'Payment' + 20-character ID where the 10th character is 'A'.
+    Format: 1005XXXXX A XXXXXXXXXX (20 chars total starting with 1005, 'A' at position 10)
+    """
+    # Use payment_id hash to generate deterministic digits
+    hash_hex = hashlib.sha256(payment_id.encode()).hexdigest()
+    # Convert hex to digits
+    digits = ''.join(str(int(c, 16) % 10) for c in hash_hex)
+    # Build: 1005 + 5 digits + A + 10 digits = 20 chars starting with 1005, A at pos 10
+    code = f"1005{digits[:5]}A{digits[5:15]}"
+    return f"Payment {code}"
+
+
+def build_paytrust_customer(user_data: dict, user_id: str) -> dict:
+    """
+    Build the PayTrust customer/client object with all required billing fields.
+    Reads from Firestore user profile: firstName, lastName, email, phone,
+    address, city, postCode, country.
+    """
+    first_name = user_data.get("firstName") or (
+        user_data.get("name", "").split()[0] if user_data.get("name") else "User"
+    )
+    last_name = user_data.get("lastName") or (
+        user_data.get("name", "").split()[-1]
+        if user_data.get("name") and len(user_data.get("name", "").split()) > 1
+        else "Customer"
+    )
+    full_name = f"{first_name} {last_name}".strip()
+
+    customer = {
+        "referenceId": user_id,
+        "firstName": first_name,
+        "lastName": last_name,
+        "email": user_data.get("email", "customer@example.com"),
+        "full_name": full_name,
+    }
+
+    # Add billing address fields if available
+    phone = user_data.get("phone", "").strip()
+    if phone:
+        customer["phone"] = phone
+
+    address = user_data.get("address", "").strip()
+    if address:
+        customer["street_address"] = address
+
+    city = user_data.get("city", "").strip()
+    if city:
+        customer["city"] = city
+
+    state = user_data.get("state", "").strip() or city  # Fallback to city
+    if state:
+        customer["state"] = state
+
+    post_code = user_data.get("postCode", "").strip()
+    if post_code:
+        customer["zip_code"] = post_code
+
+    country = user_data.get("country", "").strip()
+    if country:
+        customer["country"] = country
+
+    return customer
+
+
 # --- Firebase Admin SDK Setup ---
 db = None
 firebase_init_error = None
@@ -500,23 +580,34 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
     backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
     frontend_url = os.getenv('FRONTEND_URL', 'https://reelzila.studio')
 
+    # Generate 32-char hex reference and store mapping for webhook resolution
+    reference_id = generate_paytrust_reference({"payment_id": payment_id, "user_id": payment_request.userId})
+
+    # Store reference mapping in the payment record for webhook resolution
+    payment_ref.update({
+        "paytrustReferenceId": reference_id
+    })
+
+    # Also store mapping in a dedicated collection for fast webhook lookup
+    db.collection('paytrust_references').document(reference_id).set({
+        "type": "payment",
+        "payment_id": payment_id,
+        "user_id": payment_request.userId,
+        "createdAt": firestore.SERVER_TIMESTAMP
+    })
+
     # PayTrust payment payload
     payload = {
         "paymentType": "DEPOSIT",
         "paymentMethod": "BASIC_CARD",
         "amount": amount,
         "currency": "EUR",
-        "description": f"Reelzila Credits Purchase - {credits_to_add} credits",
+        "description": generate_paytrust_description(payment_id),
         "returnUrl": f"{frontend_url}/payment/success?payment_id={payment_id}",
         "errorUrl": f"{frontend_url}/payment/cancel?payment_id={payment_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
-        "referenceId": f"payment_id={payment_id};user_id={payment_request.userId}",
-        "customer": {
-            "referenceId": payment_request.userId,
-            "firstName": user_data.get("firstName") or (user_data.get("name", "").split()[0] if user_data.get("name") else "User"),
-            "lastName": user_data.get("lastName") or (user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer"),
-            "email": user_data.get("email", "customer@example.com")
-        }
+        "referenceId": reference_id,
+        "customer": build_paytrust_customer(user_data, payment_request.userId)
     }
 
     logger.info(f"[PAYTRUST] Initiating payment request", extra={
@@ -1016,12 +1107,31 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
     backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
     frontend_url = os.getenv('FRONTEND_URL', 'https://reelzila.studio')
 
+    # Generate 32-char hex reference and store mapping for webhook resolution
+    reference_id = generate_paytrust_reference({
+        "subscription_id": subscription_id,
+        "user_id": sub_request.userId,
+        "price_id": sub_request.priceId
+    })
+
+    subscription_ref.update({
+        "paytrustReferenceId": reference_id
+    })
+
+    db.collection('paytrust_references').document(reference_id).set({
+        "type": "subscription",
+        "subscription_id": subscription_id,
+        "user_id": sub_request.userId,
+        "price_id": sub_request.priceId,
+        "createdAt": firestore.SERVER_TIMESTAMP
+    })
+
     payload = {
         "paymentType": "DEPOSIT",
         "paymentMethod": "BASIC_CARD",
         "amount": amount,
         "currency": "EUR",
-        "description": f"Reelzila {plan_name} Subscription - {credits_to_add} credits/month",
+        "description": generate_paytrust_description(subscription_id),
         "returnUrl": f"{frontend_url}/payment/success?subscription_id={subscription_id}",
         "errorUrl": f"{frontend_url}/payment/cancel?subscription_id={subscription_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
@@ -1032,13 +1142,8 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
             "amount": amount,
             "startTime": next_billing
         },
-        "referenceId": f"subscription_id={subscription_id};user_id={sub_request.userId};price_id={sub_request.priceId}",
-        "customer": {
-            "referenceId": sub_request.userId,
-            "firstName": user_data.get("firstName") or (user_data.get("name", "").split()[0] if user_data.get("name") else "User"),
-            "lastName": user_data.get("lastName") or (user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer"),
-            "email": user_data.get("email", "customer@example.com")
-        }
+        "referenceId": reference_id,
+        "customer": build_paytrust_customer(user_data, sub_request.userId)
     }
 
     logger.info(f"[PAYTRUST] Initiating subscription request", extra={
@@ -1181,12 +1286,27 @@ async def paytrust_webhook(request: Request):
             logger.info(f"[PAYTRUST] Payment method: brand={payment_method_details.get('cardBrand')}, masked={payment_method_details.get('customerAccountNumber')}")
 
         # Parse referenceId to extract metadata
+        # New format: 32-char hex string → look up in paytrust_references collection
+        # Legacy format: key=value;key=value pairs → parse directly
         metadata = {}
         if reference_id:
-            for pair in reference_id.split(";"):
-                if "=" in pair:
-                    key, value = pair.split("=", 1)
-                    metadata[key] = value
+            is_hex_reference = len(reference_id) == 32 and all(c in '0123456789abcdef' for c in reference_id.lower())
+
+            if is_hex_reference and db:
+                # New format: look up metadata from paytrust_references collection
+                ref_doc = db.collection('paytrust_references').document(reference_id).get()
+                if ref_doc.exists:
+                    metadata = ref_doc.to_dict() or {}
+                    logger.info(f"[PAYTRUST] Resolved hex reference {reference_id} → type={metadata.get('type')}")
+                else:
+                    logger.warning(f"[PAYTRUST] Hex reference {reference_id} not found in paytrust_references")
+            else:
+                # Legacy format: key=value;key=value
+                for pair in reference_id.split(";"):
+                    if "=" in pair:
+                        key, value = pair.split("=", 1)
+                        metadata[key] = value
+                logger.info(f"[PAYTRUST] Parsed legacy reference format")
 
         user_id = metadata.get("user_id")
         payment_doc_id = metadata.get("payment_id")
@@ -3503,22 +3623,38 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
     backend_url = os.getenv('BACKEND_URL', 'https://aivideogenerator-production.up.railway.app')
     frontend_url = os.getenv('FRONTEND_URL', 'https://reelzila.studio')
 
+    # Generate 32-char hex reference and store mapping for webhook resolution
+    reference_id = generate_paytrust_reference({
+        "marketplace_purchase_id": purchase_id,
+        "user_id": user_id,
+        "seller_id": verified_seller_id,
+        "product_id": purchase_request.productId
+    })
+
+    purchase_ref.update({
+        "paytrustReferenceId": reference_id
+    })
+
+    db.collection('paytrust_references').document(reference_id).set({
+        "type": "marketplace_purchase",
+        "marketplace_purchase_id": purchase_id,
+        "user_id": user_id,
+        "seller_id": verified_seller_id,
+        "product_id": purchase_request.productId,
+        "createdAt": firestore.SERVER_TIMESTAMP
+    })
+
     payload = {
         "paymentType": "DEPOSIT",
         "paymentMethod": "BASIC_CARD",
         "amount": verified_price,  # Use verified price from database
         "currency": "EUR",
-        "description": f"Reelzila Marketplace - {verified_title[:50]}",
+        "description": generate_paytrust_description(purchase_id),
         "returnUrl": f"{frontend_url}/marketplace/purchase/success?purchase_id={purchase_id}",
         "errorUrl": f"{frontend_url}/marketplace/purchase/cancel?purchase_id={purchase_id}",
         "webhookUrl": f"{backend_url}/paytrust-webhook",
-        "referenceId": f"marketplace_purchase_id={purchase_id};user_id={user_id};seller_id={verified_seller_id};product_id={purchase_request.productId}",
-        "customer": {
-            "referenceId": user_id,
-            "firstName": user_data.get("firstName") or (user_data.get("name", "").split()[0] if user_data.get("name") else "User"),
-            "lastName": user_data.get("lastName") or (user_data.get("name", "").split()[-1] if user_data.get("name") and len(user_data.get("name", "").split()) > 1 else "Customer"),
-            "email": user_data.get("email", "customer@example.com")
-        }
+        "referenceId": reference_id,
+        "customer": build_paytrust_customer(user_data, user_id)
     }
 
     logger.info(f"[PAYTRUST] Initiating marketplace purchase payment", extra={

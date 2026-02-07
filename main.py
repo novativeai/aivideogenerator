@@ -681,7 +681,7 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
         raise HTTPException(status_code=500, detail="Payment service temporarily unavailable. Please try again.")
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}", extra={"payment_id": payment_id})
-        raise HTTPException(status_code=500, detail=error_detail)
+        raise HTTPException(status_code=500, detail="Payment processing failed. Please try again or contact support.")
 
 
 class ConfirmPaymentRequest(BaseModel):
@@ -847,6 +847,57 @@ async def cancel_payment(request: Request, cancel_request: CancelPaymentRequest)
 
     logger.info(f"[CANCEL-PAYMENT] Payment {payment_id} cancelled by user {user_id}")
     return {"status": "cancelled", "message": "Payment cancelled"}
+
+
+class CancelMarketplacePurchaseRequest(BaseModel):
+    purchaseId: str = Field(..., min_length=1)
+
+@app.post("/marketplace/cancel-purchase")
+@limiter.limit("10/minute")
+async def cancel_marketplace_purchase(request: Request, cancel_request: CancelMarketplacePurchaseRequest):
+    """
+    Cancel a pending marketplace purchase via backend (called by cancel page).
+    Only the purchase buyer can cancel, and only if still pending.
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized.")
+
+    # Verify user authentication
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    token = auth_header.split("Bearer ")[1]
+    try:
+        decoded_token = auth.verify_id_token(token)
+        user_id = decoded_token['uid']
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    purchase_id = cancel_request.purchaseId
+    purchase_ref = db.collection('marketplace_purchases').document(purchase_id)
+    purchase_doc = purchase_ref.get()
+
+    if not purchase_doc.exists:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+
+    purchase_data = purchase_doc.to_dict()
+
+    # Only the buyer can cancel their own purchase
+    if purchase_data.get('buyerId') != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Only cancel pending purchases
+    if purchase_data.get('status') != 'pending':
+        return {"status": purchase_data.get('status'), "message": "Purchase is no longer pending"}
+
+    purchase_ref.update({
+        "status": "cancelled",
+        "cancelledAt": firestore.SERVER_TIMESTAMP
+    })
+
+    logger.info(f"[CANCEL-MARKETPLACE-PURCHASE] Purchase {purchase_id} cancelled by user {user_id}")
+    return {"status": "cancelled", "message": "Purchase cancelled"}
 
 
 class ConfirmMarketplacePurchaseRequest(BaseModel):
@@ -1308,7 +1359,7 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
         raise HTTPException(status_code=500, detail="Payment service temporarily unavailable. Please try again.")
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}", extra={"subscription_id": subscription_id})
-        raise HTTPException(status_code=500, detail=error_detail)
+        raise HTTPException(status_code=500, detail="Subscription processing failed. Please try again or contact support.")
 
 @app.post("/paytrust-webhook")
 @limiter.limit("100/minute")
@@ -3873,10 +3924,9 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
         purchase_ref.update({"status": "payment_failed", "error": "Request failed"})
         raise HTTPException(status_code=500, detail="Payment service temporarily unavailable. Please try again.")
     except Exception as e:
-        error_detail = f"Unexpected error: {str(e)}"
-        logger.error(error_detail, extra={"purchase_id": purchase_id})
-        purchase_ref.update({"status": "payment_failed", "error": error_detail})
-        raise HTTPException(status_code=500, detail=error_detail)
+        logger.error(f"Unexpected error: {str(e)}", extra={"purchase_id": purchase_id})
+        purchase_ref.update({"status": "payment_failed", "error": str(e)})
+        raise HTTPException(status_code=500, detail="Purchase payment failed. Please try again or contact support.")
 
 
 @app.get("/marketplace/purchase/{purchase_id}")

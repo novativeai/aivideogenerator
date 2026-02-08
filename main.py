@@ -163,7 +163,24 @@ def build_paytrust_customer(user_data: dict, user_id: str) -> dict:
     # Add billing address fields if available (sanitized + length-limited)
     phone = _sanitize_field(user_data.get("phone", ""))
     if phone:
-        customer["phone"] = phone
+        # PayTrust requires phone format: "\d+ \d+" (e.g. "261 326194185")
+        # Strip to digits only, then re-insert a space after country code
+        digits = ''.join(c for c in phone if c.isdigit())
+        if len(digits) > 3:
+            # Check if original had a space separator (e.g. "+261 326194185" or "261 326194185")
+            cleaned = phone.lstrip('+').strip()
+            if ' ' in cleaned:
+                # Use the first space position to split country code from number
+                parts = cleaned.split(None, 1)
+                cc = ''.join(c for c in parts[0] if c.isdigit())
+                num = ''.join(c for c in parts[1] if c.isdigit())
+                if cc and num:
+                    customer["phone"] = f"{cc} {num}"
+                else:
+                    customer["phone"] = f"{digits[:3]} {digits[3:]}"
+            else:
+                # No space — default split after 3 digits (covers most country codes)
+                customer["phone"] = f"{digits[:3]} {digits[3:]}"
 
     address = _sanitize_field(user_data.get("address", ""))
     if address:

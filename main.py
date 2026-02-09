@@ -2368,6 +2368,9 @@ async def add_transaction(request: Request, user_id: str, trans_request: AdminTr
         "type": trans_request.type,
         "status": trans_request.status
     })
+    # Update user credits for paid transactions
+    if trans_request.status.lower().strip() == "paid" and trans_request.amount > 0:
+        db.collection('users').document(user_id).update({"credits": firestore.Increment(trans_request.amount)})
     return {"message": "Transaction added successfully"}
 
 @app.put("/admin/transactions/{user_id}/{trans_id}", dependencies=[admin_dependency])
@@ -2406,6 +2409,8 @@ async def bulk_add_transactions(request: Request, bulk_request: BulkTransactionR
     results = {"success": 0, "errors": []}
     # Cache email -> user_id lookups
     email_cache: dict[str, str | None] = {}
+    # Track credits to add per user (only for paid transactions)
+    credits_per_user: dict[str, int] = {}
 
     for idx, row in enumerate(bulk_request.rows):
         row_num = idx + 2  # +2 because row 1 is headers, idx is 0-based
@@ -2432,19 +2437,32 @@ async def bulk_add_transactions(request: Request, bulk_request: BulkTransactionR
                 results["errors"].append(f"Row {row_num}: Invalid date \"{row.date}\"")
                 continue
 
+            status = row.status.lower().strip()
+
             # Write transaction using Admin SDK (bypasses Firestore rules)
             db.collection('users').document(user_id).collection('payments').add({
                 "createdAt": trans_date,
                 "amount": row.amount,
                 "type": row.type.strip(),
-                "status": row.status.lower().strip(),
+                "status": status,
             })
             results["success"] += 1
+
+            # Accumulate credits for paid transactions
+            if status == "paid" and row.amount > 0:
+                credits_per_user[user_id] = credits_per_user.get(user_id, 0) + row.amount
 
         except Exception as e:
             results["errors"].append(f"Row {row_num}: {str(e)}")
 
-    logger.info(f"Bulk transaction import: {results['success']} succeeded, {len(results['errors'])} failed")
+    # Batch update credits for all affected users
+    for user_id, credits in credits_per_user.items():
+        try:
+            db.collection('users').document(user_id).update({"credits": firestore.Increment(credits)})
+        except Exception as e:
+            results["errors"].append(f"Failed to update credits for user {user_id}: {str(e)}")
+
+    logger.info(f"Bulk transaction import: {results['success']} succeeded, {len(results['errors'])} failed, {len(credits_per_user)} users credited")
     return results
 
 @app.post("/admin/users/{user_id}/reset-password", dependencies=[admin_dependency])

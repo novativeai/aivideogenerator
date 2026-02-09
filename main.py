@@ -2377,6 +2377,16 @@ async def add_transaction(request: Request, user_id: str, trans_request: AdminTr
 @limiter.limit("20/minute")
 async def update_transaction(request: Request, user_id: str, trans_id: str, trans_request: AdminTransactionRequest):
     trans_ref = db.collection('users').document(user_id).collection('payments').document(trans_id)
+
+    # Fetch original transaction to calculate credit delta
+    old_doc = trans_ref.get()
+    if not old_doc.exists:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    old_data = old_doc.to_dict()
+    old_paid_amount = old_data.get("amount", 0) if old_data.get("status", "").lower() == "paid" else 0
+    new_paid_amount = trans_request.amount if trans_request.status.lower().strip() == "paid" else 0
+    credit_delta = new_paid_amount - old_paid_amount
+
     trans_date = datetime.strptime(trans_request.date, '%d/%m/%Y')
     trans_ref.update({
         "createdAt": trans_date,
@@ -2384,12 +2394,26 @@ async def update_transaction(request: Request, user_id: str, trans_id: str, tran
         "type": trans_request.type,
         "status": trans_request.status
     })
+
+    # Adjust credits if there's a difference
+    if credit_delta != 0:
+        db.collection('users').document(user_id).update({"credits": firestore.Increment(credit_delta)})
+
     return {"message": "Transaction updated successfully"}
 
 @app.delete("/admin/transactions/{user_id}/{trans_id}", dependencies=[admin_dependency])
 @limiter.limit("10/minute")
 async def delete_transaction(request: Request, user_id: str, trans_id: str):
-    db.collection('users').document(user_id).collection('payments').document(trans_id).delete()
+    trans_ref = db.collection('users').document(user_id).collection('payments').document(trans_id)
+
+    # Fetch transaction before deleting to check if credits need adjustment
+    doc = trans_ref.get()
+    if doc.exists:
+        data = doc.to_dict()
+        if data.get("status", "").lower() == "paid" and data.get("amount", 0) > 0:
+            db.collection('users').document(user_id).update({"credits": firestore.Increment(-data["amount"])})
+
+    trans_ref.delete()
     return {"message": "Transaction deleted successfully"}
 
 class BulkTransactionRow(BaseModel):

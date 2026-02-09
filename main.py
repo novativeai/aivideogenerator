@@ -2394,7 +2394,7 @@ class BulkTransactionRow(BaseModel):
     date: str = Field(..., pattern=r'^\d{2}/\d{2}/\d{4}$', description="Date in DD/MM/YYYY format")
     amount: int = Field(..., ge=0, le=100000)
     type: str = Field(..., min_length=1, max_length=50)
-    status: str = Field(..., pattern=r'^(paid|pending|failed)$', description="Must be paid, pending, or failed")
+    status: str = Field(..., pattern=r'^(?i)(paid|pending|failed)$', description="Must be paid, pending, or failed (case-insensitive)")
 
 class BulkTransactionRequest(BaseModel):
     rows: list[BulkTransactionRow] = Field(..., min_length=1, max_length=1000)

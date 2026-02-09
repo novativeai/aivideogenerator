@@ -2389,6 +2389,64 @@ async def delete_transaction(request: Request, user_id: str, trans_id: str):
     db.collection('users').document(user_id).collection('payments').document(trans_id).delete()
     return {"message": "Transaction deleted successfully"}
 
+class BulkTransactionRow(BaseModel):
+    email: EmailStr
+    date: str = Field(..., pattern=r'^\d{2}/\d{2}/\d{4}$', description="Date in DD/MM/YYYY format")
+    amount: int = Field(..., ge=0, le=100000)
+    type: str = Field(..., min_length=1, max_length=50)
+    status: str = Field(..., pattern=r'^(paid|pending|failed)$', description="Must be paid, pending, or failed")
+
+class BulkTransactionRequest(BaseModel):
+    rows: list[BulkTransactionRow] = Field(..., min_length=1, max_length=1000)
+
+@app.post("/admin/transactions/bulk", dependencies=[admin_dependency])
+@limiter.limit("5/minute")
+async def bulk_add_transactions(request: Request, bulk_request: BulkTransactionRequest):
+    """Bulk import transactions from CSV/XLSX upload. Max 1000 rows per request."""
+    results = {"success": 0, "errors": []}
+    # Cache email -> user_id lookups
+    email_cache: dict[str, str | None] = {}
+
+    for idx, row in enumerate(bulk_request.rows):
+        row_num = idx + 2  # +2 because row 1 is headers, idx is 0-based
+        try:
+            email = row.email.lower().strip()
+
+            # Lookup user by email (with cache)
+            if email not in email_cache:
+                users_query = db.collection('users').where('email', '==', email).limit(1).get()
+                if not users_query:
+                    email_cache[email] = None
+                else:
+                    email_cache[email] = users_query[0].id
+
+            user_id = email_cache.get(email)
+            if not user_id:
+                results["errors"].append(f"Row {row_num}: User with email \"{email}\" not found")
+                continue
+
+            # Parse and validate date
+            try:
+                trans_date = datetime.strptime(row.date, '%d/%m/%Y')
+            except ValueError:
+                results["errors"].append(f"Row {row_num}: Invalid date \"{row.date}\"")
+                continue
+
+            # Write transaction using Admin SDK (bypasses Firestore rules)
+            db.collection('users').document(user_id).collection('payments').add({
+                "createdAt": trans_date,
+                "amount": row.amount,
+                "type": row.type.strip(),
+                "status": row.status.lower().strip(),
+            })
+            results["success"] += 1
+
+        except Exception as e:
+            results["errors"].append(f"Row {row_num}: {str(e)}")
+
+    logger.info(f"Bulk transaction import: {results['success']} succeeded, {len(results['errors'])} failed")
+    return results
+
 @app.post("/admin/users/{user_id}/reset-password", dependencies=[admin_dependency])
 @limiter.limit("5/minute")
 async def reset_user_password(request: Request, user_id: str, password_data: dict):

@@ -3,19 +3,21 @@ import logging
 import sys
 import traceback
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Header, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Depends, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, validator, EmailStr, Field
 import re
 import fal_client
 import firebase_admin
-from firebase_admin import credentials, firestore, auth
+from firebase_admin import credentials, firestore, auth, storage
 from typing import Dict, Any, List, Optional
 import base64
 import json
 import io
 from datetime import datetime
 import requests
+import subprocess
+import tempfile
 import hmac
 import hashlib
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -1951,9 +1953,66 @@ def upload_image_to_fal(base64_data: str) -> str | None:
         return None
 
 
+def generate_video_thumbnail(video_url: str, user_id: str, generation_ref_path: str):
+    """Background task: extract a thumbnail frame from a video and upload to Firebase Storage."""
+    tmp_video_path = None
+    tmp_thumb_path = None
+    try:
+        bucket_name = os.getenv('FIREBASE_STORAGE_BUCKET')
+        if not bucket_name:
+            return
+
+        # Download enough of the video to extract a frame (first 2 MB)
+        resp = requests.get(video_url, stream=True, timeout=30)
+        resp.raise_for_status()
+
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
+            tmp_video_path = tmp.name
+            downloaded = 0
+            for chunk in resp.iter_content(chunk_size=8192):
+                tmp.write(chunk)
+                downloaded += len(chunk)
+                if downloaded > 2 * 1024 * 1024:
+                    break
+
+        # Extract frame at 0.5s using ffmpeg
+        tmp_thumb_path = tmp_video_path.replace('.mp4', '.jpg')
+        result = subprocess.run(
+            ['ffmpeg', '-i', tmp_video_path, '-ss', '0.5', '-frames:v', '1',
+             '-q:v', '2', '-y', tmp_thumb_path],
+            capture_output=True, timeout=15
+        )
+        if result.returncode != 0:
+            logger.warning(f"ffmpeg failed for {generation_ref_path}: {result.stderr.decode()[:200]}")
+            return
+
+        # Upload to Firebase Storage
+        bucket = storage.bucket()
+        ts = int(datetime.now().timestamp() * 1000)
+        blob_path = f"generations/thumbnails/{user_id}/{ts}.jpg"
+        blob = bucket.blob(blob_path)
+        blob.upload_from_filename(tmp_thumb_path, content_type='image/jpeg')
+        blob.make_public()
+        thumbnail_url = blob.public_url
+
+        # Update the generation document
+        db.document(generation_ref_path).update({'thumbnailUrl': thumbnail_url})
+        logger.info(f"Thumbnail uploaded for {generation_ref_path}")
+
+    except Exception as e:
+        logger.warning(f"Thumbnail generation skipped for {generation_ref_path}: {e}")
+    finally:
+        for path in [tmp_video_path, tmp_thumb_path]:
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
 @app.post("/generate-video")
 @limiter.limit("10/minute")
-async def generate_media(request: Request, video_request: VideoRequest):
+async def generate_media(request: Request, video_request: VideoRequest, background_tasks: BackgroundTasks):
     if not db:
         raise HTTPException(status_code=500, detail="Firestore database not initialized.")
 
@@ -2167,6 +2226,15 @@ async def generate_media(request: Request, video_request: VideoRequest):
                 'createdAt': firestore.SERVER_TIMESTAMP,
                 'transactionId': transaction_id
             })
+
+            # Queue background thumbnail generation for video outputs
+            if output_type == "video":
+                background_tasks.add_task(
+                    generate_video_thumbnail,
+                    output_url,
+                    video_request.user_id,
+                    generation_ref.path,
+                )
 
         logger.info(f"Generation completed for user {video_request.user_id}, transaction {transaction_id}. Outputs: {len(output_urls)}")
         return {"output_urls": output_urls}

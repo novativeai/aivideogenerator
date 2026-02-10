@@ -253,6 +253,17 @@ except Exception as e:
     firebase_init_error = str(e)
     logger.critical(f"Firebase initialization failed: {e}", exc_info=True)
 
+# --- Helpers ---
+def resolve_user_name(user_data: dict, fallback: str = 'Unknown') -> str:
+    """Resolve display name from Firestore user data.
+    Checks firstName/lastName first, then displayName, then name."""
+    first = user_data.get('firstName', '')
+    last = user_data.get('lastName', '')
+    if first or last:
+        return f"{first} {last}".strip()
+    return user_data.get('displayName') or user_data.get('name') or fallback
+
+
 # --- Pydantic Models with Validation ---
 class VideoRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=128)
@@ -981,7 +992,7 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
                     if buyer_doc.exists:
                         buyer_data = buyer_doc.to_dict()
                         buyer_email = buyer_data.get('email')
-                        buyer_name = buyer_data.get('displayName') or buyer_data.get('name') or 'Customer'
+                        buyer_name = resolve_user_name(buyer_data, 'Customer')
 
                         if buyer_email:
                             email_html = get_marketplace_purchase_confirmation_email(
@@ -1011,7 +1022,7 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
                         if seller_doc.exists:
                             seller_data = seller_doc.to_dict()
                             seller_email = seller_data.get('email')
-                            seller_name = seller_data.get('displayName') or seller_data.get('name') or 'Seller'
+                            seller_name = resolve_user_name(seller_data, 'Seller')
 
                             if seller_email:
                                 seller_email_html = get_seller_sale_notification_email(
@@ -1156,7 +1167,7 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
                 if buyer_doc.exists:
                     buyer_data = buyer_doc.to_dict()
                     buyer_email = buyer_data.get('email')
-                    buyer_name = buyer_data.get('displayName') or buyer_data.get('name') or 'Customer'
+                    buyer_name = resolve_user_name(buyer_data, 'Customer')
 
                     if buyer_email:
                         email_html = get_marketplace_purchase_confirmation_email(
@@ -1188,7 +1199,7 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
                 if seller_doc.exists:
                     seller_data = seller_doc.to_dict()
                     seller_email = seller_data.get('email')
-                    seller_name = seller_data.get('displayName') or seller_data.get('name') or 'Seller'
+                    seller_name = resolve_user_name(seller_data, 'Seller')
 
                     if seller_email:
                         seller_email_html = get_seller_sale_notification_email(
@@ -3567,7 +3578,7 @@ async def create_payout_request(request: Request, payout_data: PayoutRequestCrea
         if RESEND_API_KEY and ADMIN_EMAIL:
             try:
                 user_data = user_doc.to_dict() if user_doc.exists else {}
-                seller_name = user_data.get('displayName') or user_data.get('name') or 'Unknown Seller'
+                seller_name = resolve_user_name(user_data, 'Unknown Seller')
 
                 bank_details_dict = {
                     'iban': payout_data.bankDetails.iban.replace(' ', '').upper(),
@@ -3816,7 +3827,7 @@ async def send_withdrawal_notification(request: Request, notification_data: With
             raise HTTPException(status_code=404, detail="User not found")
 
         user_data = user_doc.to_dict()
-        seller_name = user_data.get('displayName') or user_data.get('name') or 'Unknown Seller'
+        seller_name = resolve_user_name(user_data, 'Unknown Seller')
         seller_email = user_data.get('email', 'No email')
 
         # Generate email HTML with bank details
@@ -3879,7 +3890,7 @@ async def send_payout_status_email(user_id: str, status: str, amount: float, acc
             return False
 
         user_data = user_doc.to_dict()
-        seller_name = user_data.get('displayName') or user_data.get('name') or 'Seller'
+        seller_name = resolve_user_name(user_data, 'Seller')
         seller_email = user_data.get('email')
 
         if not seller_email:

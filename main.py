@@ -2032,22 +2032,6 @@ def generate_video_thumbnail(video_url: str, user_id: str, generation_ref_path: 
         logger.warning(f"Thumbnail generation skipped for {generation_ref_path}")
 
 
-class ThumbnailRequest(BaseModel):
-    videoUrl: str = Field(..., max_length=2000)
-
-
-@app.post("/generate-thumbnail")
-@limiter.limit("20/minute")
-async def generate_thumbnail_endpoint(request: Request, body: ThumbnailRequest, user_id: str = Depends(verify_user_token)):
-    """Generate a thumbnail from a video URL. Used when client-side canvas capture fails (CORS)."""
-    thumbnail_url = extract_and_upload_thumbnail(
-        body.videoUrl, user_id, storage_prefix="marketplace/thumbnails"
-    )
-    if not thumbnail_url:
-        raise HTTPException(status_code=500, detail="Thumbnail generation failed. ffmpeg may not be available.")
-    return {"thumbnailUrl": thumbnail_url}
-
-
 @app.post("/generate-video")
 @limiter.limit("10/minute")
 async def generate_media(request: Request, video_request: VideoRequest, background_tasks: BackgroundTasks):
@@ -3417,6 +3401,23 @@ async def verify_user_token(authorization: str = Header(...)):
         raise HTTPException(status_code=401, detail="Token has expired")
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+
+# --- Thumbnail Generation ---
+
+class ThumbnailRequest(BaseModel):
+    videoUrl: str = Field(..., max_length=2000)
+
+
+@app.post("/generate-thumbnail")
+@limiter.limit("20/minute")
+async def generate_thumbnail_endpoint(request: Request, body: ThumbnailRequest, user_id: str = Depends(verify_user_token)):
+    """Generate a thumbnail from a video URL. Used when client-side canvas capture fails (CORS)."""
+    thumbnail_url = extract_and_upload_thumbnail(
+        body.videoUrl, user_id, storage_prefix="marketplace/thumbnails"
+    )
+    if not thumbnail_url:
+        raise HTTPException(status_code=500, detail="Thumbnail generation failed. ffmpeg may not be available.")
+    return {"thumbnailUrl": thumbnail_url}
 
 # --- Seller Endpoints ---
 

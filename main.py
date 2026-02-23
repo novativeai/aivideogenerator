@@ -1964,15 +1964,16 @@ def upload_image_to_fal(base64_data: str) -> str | None:
         return None
 
 
-def generate_video_thumbnail(video_url: str, user_id: str, generation_ref_path: str):
-    """Background task: extract a thumbnail frame from a video and upload to Firebase Storage."""
+def extract_and_upload_thumbnail(video_url: str, user_id: str, storage_prefix: str = "generations/thumbnails") -> str | None:
+    """Download a video, extract a frame at 0.5s with ffmpeg, upload JPEG to Firebase Storage.
+    Returns the public thumbnail URL or None on failure."""
+    bucket_name = os.getenv('FIREBASE_STORAGE_BUCKET')
+    if not bucket_name:
+        return None
+
     tmp_video_path = None
     tmp_thumb_path = None
     try:
-        bucket_name = os.getenv('FIREBASE_STORAGE_BUCKET')
-        if not bucket_name:
-            return
-
         # Download enough of the video to extract a frame (first 2 MB)
         resp = requests.get(video_url, stream=True, timeout=30)
         resp.raise_for_status()
@@ -1994,24 +1995,21 @@ def generate_video_thumbnail(video_url: str, user_id: str, generation_ref_path: 
             capture_output=True, timeout=15
         )
         if result.returncode != 0:
-            logger.warning(f"ffmpeg failed for {generation_ref_path}: {result.stderr.decode()[:200]}")
-            return
+            logger.warning(f"ffmpeg failed: {result.stderr.decode()[:200]}")
+            return None
 
         # Upload to Firebase Storage
         bucket = storage.bucket()
         ts = int(datetime.now().timestamp() * 1000)
-        blob_path = f"generations/thumbnails/{user_id}/{ts}.jpg"
+        blob_path = f"{storage_prefix}/{user_id}/{ts}.jpg"
         blob = bucket.blob(blob_path)
         blob.upload_from_filename(tmp_thumb_path, content_type='image/jpeg')
         blob.make_public()
-        thumbnail_url = blob.public_url
-
-        # Update the generation document
-        db.document(generation_ref_path).update({'thumbnailUrl': thumbnail_url})
-        logger.info(f"Thumbnail uploaded for {generation_ref_path}")
+        return blob.public_url
 
     except Exception as e:
-        logger.warning(f"Thumbnail generation skipped for {generation_ref_path}: {e}")
+        logger.warning(f"Thumbnail extraction failed: {e}")
+        return None
     finally:
         for path in [tmp_video_path, tmp_thumb_path]:
             if path:
@@ -2019,6 +2017,35 @@ def generate_video_thumbnail(video_url: str, user_id: str, generation_ref_path: 
                     os.unlink(path)
                 except OSError:
                     pass
+
+
+def generate_video_thumbnail(video_url: str, user_id: str, generation_ref_path: str):
+    """Background task: extract thumbnail and update the generation document."""
+    thumbnail_url = extract_and_upload_thumbnail(video_url, user_id)
+    if thumbnail_url:
+        try:
+            db.document(generation_ref_path).update({'thumbnailUrl': thumbnail_url})
+            logger.info(f"Thumbnail uploaded for {generation_ref_path}")
+        except Exception as e:
+            logger.warning(f"Failed to update generation with thumbnail: {e}")
+    else:
+        logger.warning(f"Thumbnail generation skipped for {generation_ref_path}")
+
+
+class ThumbnailRequest(BaseModel):
+    videoUrl: str = Field(..., max_length=2000)
+
+
+@app.post("/generate-thumbnail")
+@limiter.limit("20/minute")
+async def generate_thumbnail_endpoint(request: Request, body: ThumbnailRequest, user_id: str = Depends(verify_user_token)):
+    """Generate a thumbnail from a video URL. Used when client-side canvas capture fails (CORS)."""
+    thumbnail_url = extract_and_upload_thumbnail(
+        body.videoUrl, user_id, storage_prefix="marketplace/thumbnails"
+    )
+    if not thumbnail_url:
+        raise HTTPException(status_code=500, detail="Thumbnail generation failed. ffmpeg may not be available.")
+    return {"thumbnailUrl": thumbnail_url}
 
 
 @app.post("/generate-video")

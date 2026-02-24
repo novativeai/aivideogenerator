@@ -1740,22 +1740,29 @@ async def paytrust_webhook(request: Request):
                         })
 
                         # 2. Credit seller's balance (in seller_balance subcollection)
+                        gross_amount = purchase_data.get('price', 0)
+                        platform_fee = purchase_data.get('platformFee', round(gross_amount * 0.15, 2))
                         balance_ref = seller_ref.collection('seller_balance').document('current')
                         balance_ref.set({
                             'totalEarned': firestore.Increment(seller_earnings),
+                            'grossEarned': firestore.Increment(gross_amount),
+                            'totalFees': firestore.Increment(platform_fee),
                             'availableBalance': firestore.Increment(seller_earnings),
                             'lastTransactionDate': firestore.SERVER_TIMESTAMP
                         }, merge=True)
-                        logger.info(f"Credited seller {seller_id_from_purchase} with €{seller_earnings}")
+                        logger.info(f"Credited seller {seller_id_from_purchase} with €{seller_earnings} (gross: €{gross_amount}, fee: €{platform_fee})")
 
                         # 3. Create transaction record for seller
                         seller_ref.collection('seller_transactions').add({
                             "type": "sale",
                             "amount": seller_earnings,
+                            "grossAmount": gross_amount,
+                            "platformFee": platform_fee,
                             "productId": purchase_data.get('productId'),
                             "productTitle": product_title,
                             "buyerId": buyer_id,
                             "purchaseId": marketplace_purchase_id,
+                            "status": "completed",
                             "createdAt": firestore.SERVER_TIMESTAMP
                         })
 

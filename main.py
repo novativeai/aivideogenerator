@@ -3456,7 +3456,9 @@ async def get_seller_profile(request: Request, user_id: str = Depends(verify_use
             "balance": {
                 "availableBalance": balance_data.get('availableBalance', 0),
                 "pendingBalance": balance_data.get('pendingBalance', 0),
-                "totalEarnings": balance_data.get('totalEarnings', 0),
+                "totalEarned": balance_data.get('totalEarned', 0),
+                "grossEarned": balance_data.get('grossEarned', 0),
+                "totalFees": balance_data.get('totalFees', 0),
                 "withdrawnBalance": seller_profile.get('withdrawnBalance', 0),
             }
         }
@@ -3515,9 +3517,11 @@ async def get_seller_balance(request: Request, user_id: str = Depends(verify_use
         return {
             "availableBalance": balance_data.get('availableBalance', 0),
             "pendingBalance": balance_data.get('pendingBalance', 0),
-            "totalEarnings": balance_data.get('totalEarnings', 0),
+            "totalEarned": balance_data.get('totalEarned', 0),
+            "grossEarned": balance_data.get('grossEarned', 0),
+            "totalFees": balance_data.get('totalFees', 0),
             "withdrawnBalance": seller_profile.get('withdrawnBalance', 0),
-            "lastUpdated": balance_data.get('lastUpdated')
+            "lastUpdated": balance_data.get('lastTransactionDate')
         }
     except Exception as e:
         logger.error(f"Failed to get seller balance for user {user_id}: {e}")

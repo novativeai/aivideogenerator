@@ -2380,13 +2380,18 @@ async def get_all_users(request: Request):
     users_docs = db.collection('users').stream()
     for user in users_docs:
         user_data = user.to_dict()
-        # Count generations from subcollection
-        generations_count = len(list(db.collection('users').document(user.id).collection('generations').select([]).stream()))
+        # Use stored generationCount if available (avoid N+1 subcollection queries)
+        gen_count = user_data.get("generationCount", user_data.get("generation_count"))
+        first = user_data.get('firstName', '')
+        last = user_data.get('lastName', '')
+        display_name = f"{first} {last}".strip() if (first or last) else user_data.get('displayName', '')
         users_list.append({
             "id": user.id,
             "email": user_data.get("email"),
+            "displayName": display_name,
             "credits": user_data.get("credits", 0),
-            "generationCount": generations_count
+            "generationCount": gen_count,
+            "createdAt": user_data.get("createdAt").isoformat() if hasattr(user_data.get("createdAt"), 'isoformat') else None,
         })
     return users_list
 

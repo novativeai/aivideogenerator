@@ -2430,6 +2430,44 @@ async def get_user_details(request: Request, user_id: str):
     user_profile['generationCount'] = generations_count
     return {"profile": user_profile, "transactions": transactions}
 
+@app.get("/admin/users/{user_id}/generations", dependencies=[admin_dependency])
+@limiter.limit("30/minute")
+async def get_user_generations(request: Request, user_id: str):
+    """Return the full generation history for a specific user."""
+    user_doc = db.collection('users').document(user_id).get()
+    if not user_doc.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    generations = []
+    gen_docs = (
+        db.collection('users')
+        .document(user_id)
+        .collection('generations')
+        .order_by("createdAt", direction=firestore.Query.DESCENDING)
+        .stream()
+    )
+    for doc in gen_docs:
+        gen_data = doc.to_dict()
+        gen_data["id"] = doc.id
+        # Format timestamp for frontend
+        if 'createdAt' in gen_data and gen_data['createdAt']:
+            try:
+                gen_data['createdAt'] = gen_data['createdAt'].isoformat()
+            except Exception:
+                gen_data['createdAt'] = str(gen_data['createdAt'])
+        generations.append({
+            "id": gen_data.get("id"),
+            "prompt": gen_data.get("prompt", ""),
+            "outputUrl": gen_data.get("outputUrl", ""),
+            "outputType": gen_data.get("outputType", "video"),
+            "thumbnailUrl": gen_data.get("thumbnailUrl", ""),
+            "modelId": gen_data.get("modelId", ""),
+            "status": gen_data.get("status", "unknown"),
+            "createdAt": gen_data.get("createdAt", ""),
+        })
+
+    return {"generations": generations, "total": len(generations)}
+
 @app.put("/admin/users/{user_id}", dependencies=[admin_dependency])
 @limiter.limit("20/minute")
 async def update_user_details(request: Request, user_id: str, user_update: AdminUserUpdateRequest):

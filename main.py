@@ -207,6 +207,50 @@ def build_paytrust_customer(user_data: dict, user_id: str) -> dict:
     return customer
 
 
+def verify_paytrust_payment_status(paytrust_payment_id: str) -> dict:
+    """
+    Verify a payment's status with PayTrust API before confirming.
+    Returns dict with 'verified' (bool) and 'state' (str).
+
+    PayTrust states: COMPLETED/SUCCESS = paid, FAILED/DECLINED/CANCELLED = not paid
+    """
+    if not paytrust_payment_id or not PAYTRUST_API_KEY:
+        logger.warning("[PAYTRUST-VERIFY] Missing payment ID or API key for verification")
+        return {"verified": False, "state": "unknown", "error": "Missing payment ID or API key"}
+
+    headers = {
+        "Content-Type": "application/json",
+        "authorization": f"Bearer {PAYTRUST_API_KEY}"
+    }
+
+    try:
+        response = requests.get(
+            f"{PAYTRUST_API_URL}/payments/{paytrust_payment_id}",
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            result = data.get("result", data)
+            state = result.get("state", "").upper()
+
+            logger.info(f"[PAYTRUST-VERIFY] Payment {paytrust_payment_id} state: {state}")
+
+            is_paid = state == "COMPLETED"
+            return {"verified": True, "state": state, "is_paid": is_paid, "raw": result}
+        else:
+            logger.warning(f"[PAYTRUST-VERIFY] API returned {response.status_code} for payment {paytrust_payment_id}: {response.text[:300]}")
+            return {"verified": False, "state": "unknown", "error": f"API returned {response.status_code}"}
+
+    except requests.exceptions.Timeout:
+        logger.error(f"[PAYTRUST-VERIFY] Timeout verifying payment {paytrust_payment_id}")
+        return {"verified": False, "state": "unknown", "error": "timeout"}
+    except Exception as e:
+        logger.error(f"[PAYTRUST-VERIFY] Error verifying payment {paytrust_payment_id}: {str(e)}")
+        return {"verified": False, "state": "unknown", "error": str(e)}
+
+
 # --- Firebase Admin SDK Setup ---
 db = None
 firebase_init_error = None
@@ -606,6 +650,21 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
     if not db:
         raise HTTPException(status_code=500, detail="Database not initialized.")
 
+    # Verify user authentication
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    token = auth_header.split("Bearer ")[1]
+    try:
+        decoded_token = auth.verify_id_token(token)
+        if decoded_token['uid'] != payment_request.userId:
+            raise HTTPException(status_code=403, detail="User ID mismatch")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+
     logger.info(f"Create Payment Request for user {payment_request.userId}")
 
     user_ref = db.collection('users').document(payment_request.userId)
@@ -795,6 +854,43 @@ async def confirm_payment(request: Request, confirm_request: ConfirmPaymentReque
         logger.warning(f"[CONFIRM-PAYMENT] Unexpected status {current_status} for payment {payment_id}")
         raise HTTPException(status_code=400, detail=f"Invalid payment status: {current_status}")
 
+    # CRITICAL: Verify payment with PayTrust before granting credits
+    paytrust_payment_id = payment_data.get('paytrustPaymentId')
+    verification = verify_paytrust_payment_status(paytrust_payment_id)
+
+    if verification.get("verified"):
+        if not verification.get("is_paid"):
+            # PayTrust says payment is NOT completed — reject and update status
+            paytrust_state = verification.get("state", "unknown")
+            logger.warning(f"[CONFIRM-PAYMENT] PayTrust verification FAILED for {payment_id}: state={paytrust_state}")
+            payment_ref.update({
+                'status': 'cancelled',
+                'cancelledAt': firestore.SERVER_TIMESTAMP,
+                'cancelReason': f'PayTrust state: {paytrust_state}',
+                'verifiedBy': 'paytrust_api'
+            })
+            raise HTTPException(status_code=400, detail=f"Payment was not completed (status: {paytrust_state})")
+
+        # Verify amount matches what we expected
+        raw_result = verification.get("raw", {})
+        paytrust_amount = raw_result.get("amount")
+        expected_amount = payment_data.get("amount", 0)
+        if paytrust_amount is not None and expected_amount and abs(float(paytrust_amount) - float(expected_amount)) > 0.01:
+            logger.error(f"[CONFIRM-PAYMENT] Amount mismatch for {payment_id}: PayTrust={paytrust_amount}, expected={expected_amount}")
+            payment_ref.update({
+                'status': 'amount_mismatch',
+                'expectedAmount': expected_amount,
+                'receivedAmount': paytrust_amount,
+                'verifiedBy': 'paytrust_api'
+            })
+            raise HTTPException(status_code=400, detail="Payment amount mismatch")
+
+        logger.info(f"[CONFIRM-PAYMENT] PayTrust verification PASSED for {payment_id} (amount: €{paytrust_amount})")
+    else:
+        # Could not verify with PayTrust — do not confirm blindly
+        logger.warning(f"[CONFIRM-PAYMENT] Could not verify payment {payment_id} with PayTrust: {verification.get('error')}")
+        raise HTTPException(status_code=503, detail="Unable to verify payment status. Please try again in a moment.")
+
     # Mark as paid and add credits using transaction to prevent race with webhook
     credits_to_add = payment_data.get('creditsPurchased', 0)
 
@@ -813,7 +909,8 @@ async def confirm_payment(request: Request, confirm_request: ConfirmPaymentReque
             transaction.update(payment_ref, {
                 'status': 'paid',
                 'paidAt': firestore.SERVER_TIMESTAMP,
-                'confirmedBy': 'frontend_redirect'
+                'confirmedBy': 'frontend_redirect',
+                'verifiedBy': 'paytrust_api'
             })
 
             user_ref = db.collection('users').document(user_id)
@@ -1082,50 +1179,109 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
         logger.warning(f"[CONFIRM-MARKETPLACE] Unexpected status {current_status} for purchase {purchase_id}")
         raise HTTPException(status_code=400, detail=f"Invalid purchase status: {current_status}")
 
+    # CRITICAL: Verify payment with PayTrust before completing purchase
+    paytrust_payment_id = purchase_data.get('paytrustPaymentId')
+    verification = verify_paytrust_payment_status(paytrust_payment_id)
+
+    if verification.get("verified"):
+        if not verification.get("is_paid"):
+            # PayTrust says payment is NOT completed — reject and update status
+            paytrust_state = verification.get("state", "unknown")
+            logger.warning(f"[CONFIRM-MARKETPLACE] PayTrust verification FAILED for purchase {purchase_id}: state={paytrust_state}")
+            purchase_ref.update({
+                'status': 'cancelled',
+                'cancelledAt': firestore.SERVER_TIMESTAMP,
+                'cancelReason': f'PayTrust state: {paytrust_state}',
+                'verifiedBy': 'paytrust_api'
+            })
+            raise HTTPException(status_code=400, detail=f"Payment was not completed (status: {paytrust_state})")
+
+        # Verify amount matches what we expected
+        raw_result = verification.get("raw", {})
+        paytrust_amount = raw_result.get("amount")
+        expected_amount = purchase_data.get("price", 0)
+        if paytrust_amount is not None and expected_amount and abs(float(paytrust_amount) - float(expected_amount)) > 0.01:
+            logger.error(f"[CONFIRM-MARKETPLACE] Amount mismatch for purchase {purchase_id}: PayTrust={paytrust_amount}, expected={expected_amount}")
+            purchase_ref.update({
+                'status': 'amount_mismatch',
+                'expectedAmount': expected_amount,
+                'receivedAmount': paytrust_amount,
+                'verifiedBy': 'paytrust_api'
+            })
+            raise HTTPException(status_code=400, detail="Payment amount mismatch")
+
+        logger.info(f"[CONFIRM-MARKETPLACE] PayTrust verification PASSED for purchase {purchase_id} (amount: €{paytrust_amount})")
+    else:
+        # Could not verify with PayTrust — do not confirm blindly
+        logger.warning(f"[CONFIRM-MARKETPLACE] Could not verify purchase {purchase_id} with PayTrust: {verification.get('error')}")
+        raise HTTPException(status_code=503, detail="Unable to verify payment status. Please try again in a moment.")
+
     try:
         seller_id = purchase_data.get('sellerId')
         seller_earnings = purchase_data.get('sellerEarnings', 0)
         product_title = purchase_data.get('title', 'Unknown Product')
         product_id = purchase_data.get('productId')
+        gross_amount = purchase_data.get('price', 0)
+        platform_fee = purchase_data.get('platformFee', round(gross_amount * 0.15, 2))
 
-        # Atomic status check: re-read and verify still pending before updating
-        # This prevents race condition with webhook processing same purchase
-        fresh_doc = purchase_ref.get()
-        if fresh_doc.exists and fresh_doc.to_dict().get('status') != 'pending':
-            logger.info(f"[CONFIRM-MARKETPLACE] Purchase {purchase_id} already processed (status={fresh_doc.to_dict().get('status')}), skipping")
-            fresh_data = fresh_doc.to_dict()
+        # Use Firestore transaction to atomically check status and complete purchase
+        # Prevents race condition with webhook processing the same purchase
+        @firestore.transactional
+        def complete_purchase_in_transaction(transaction):
+            snapshot = purchase_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return None
+            current = snapshot.to_dict()
+            if current.get('status') != 'pending':
+                return {"already_processed": True, "status": current.get('status')}
+
+            # Atomically mark as completed
+            transaction.update(purchase_ref, {
+                "status": "completed",
+                "completedAt": firestore.SERVER_TIMESTAMP,
+                "confirmedBy": "frontend_redirect",
+                "verifiedBy": "paytrust_api"
+            })
+            return {"already_processed": False}
+
+        transaction = db.transaction()
+        tx_result = complete_purchase_in_transaction(transaction)
+
+        if tx_result is None:
+            raise HTTPException(status_code=404, detail="Purchase not found")
+
+        if tx_result.get("already_processed"):
+            logger.info(f"[CONFIRM-MARKETPLACE] Purchase {purchase_id} already processed (status={tx_result['status']}), skipping")
             return {
-                "status": fresh_data.get('status'),
-                "title": fresh_data.get('title'),
-                "price": fresh_data.get('price'),
-                "videoUrl": fresh_data.get('videoUrl'),
+                "status": tx_result['status'],
+                "title": purchase_data.get('title'),
+                "price": purchase_data.get('price'),
+                "videoUrl": purchase_data.get('videoUrl'),
                 "message": "Purchase already processed"
             }
 
-        # 1. Update purchase status to completed
-        purchase_ref.update({
-            "status": "completed",
-            "completedAt": firestore.SERVER_TIMESTAMP,
-            "confirmedBy": "frontend_redirect"
-        })
+        # Purchase atomically marked as completed — now perform side effects
 
-        # 2. Credit seller's balance (in seller_balance subcollection)
+        # 1. Credit seller's balance (matching webhook parity: grossEarned + totalFees)
         seller_ref = db.collection('users').document(seller_id)
         seller_doc = seller_ref.get()
         if seller_doc.exists:
-            # Update seller_balance/current with proper balance fields
             balance_ref = seller_ref.collection('seller_balance').document('current')
             balance_ref.set({
                 'totalEarned': firestore.Increment(seller_earnings),
+                'grossEarned': firestore.Increment(gross_amount),
+                'totalFees': firestore.Increment(platform_fee),
                 'availableBalance': firestore.Increment(seller_earnings),
                 'lastTransactionDate': firestore.SERVER_TIMESTAMP
             }, merge=True)
-            logger.info(f"[CONFIRM-MARKETPLACE] Credited seller {seller_id} with €{seller_earnings}")
+            logger.info(f"[CONFIRM-MARKETPLACE] Credited seller {seller_id} with €{seller_earnings} (gross: €{gross_amount}, fee: €{platform_fee})")
 
-            # 3. Create transaction record for seller
+            # 2. Create transaction record for seller (matching webhook parity)
             seller_ref.collection('seller_transactions').add({
                 "type": "sale",
                 "amount": seller_earnings,
+                "grossAmount": gross_amount,
+                "platformFee": platform_fee,
                 "productId": product_id,
                 "productTitle": product_title,
                 "buyerId": user_id,
@@ -1133,16 +1289,18 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
                 "createdAt": firestore.SERVER_TIMESTAMP
             })
 
-        # 4. Update product sales count in marketplace_listings
+        # 3. Update product: increment sales count + mark as sold
         if product_id:
             product_ref = db.collection('marketplace_listings').document(product_id)
             product_doc_check = product_ref.get()
             if product_doc_check.exists:
                 product_ref.update({
-                    "salesCount": firestore.Increment(1)
+                    "salesCount": firestore.Increment(1),
+                    "status": "sold",
+                    "soldAt": firestore.SERVER_TIMESTAMP
                 })
 
-        # 5. Create purchased_videos record for buyer (for frontend display)
+        # 4. Create purchased_videos record for buyer
         buyer_ref = db.collection('users').document(user_id)
         buyer_ref.collection('purchased_videos').add({
             "productId": product_id,
@@ -1157,7 +1315,7 @@ async def confirm_marketplace_purchase(request: Request, confirm_request: Confir
         })
         logger.info(f"[CONFIRM-MARKETPLACE] Created purchased_videos record for buyer {user_id}")
 
-        # 6. Create payment record for buyer's billing history
+        # 5. Create payment record for buyer's billing history
         buyer_ref.collection('payments').add({
             "amount": purchase_data.get('price'),
             "createdAt": firestore.SERVER_TIMESTAMP,
@@ -1266,6 +1424,21 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
     """Create a recurring subscription using PayTrust"""
     if not db:
         raise HTTPException(status_code=500, detail="Database not initialized.")
+
+    # Verify user authentication
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    token = auth_header.split("Bearer ")[1]
+    try:
+        decoded_token = auth.verify_id_token(token)
+        if decoded_token['uid'] != sub_request.userId:
+            raise HTTPException(status_code=403, detail="User ID mismatch")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
     logger.info(f"Create Subscription Request for user {sub_request.userId}")
 
@@ -1434,32 +1607,34 @@ async def paytrust_webhook(request: Request):
         is_internal_ip = client_ip.startswith('::ffff:100.64.') or client_ip.startswith('100.64.')
 
         # --- Webhook Signature Verification ---
-        signature = request.headers.get("X-PayTrust-Signature") or request.headers.get("X-Signature")
+        # PayTrust sends HMAC-SHA256 signature in the 'Signature' header
+        signature = request.headers.get("Signature")
 
         if PAYTRUST_SIGNING_KEY:
-            if signature:
-                expected_signature = hmac.new(
-                    PAYTRUST_SIGNING_KEY.encode('utf-8'),
-                    body,
-                    hashlib.sha256
-                ).hexdigest()
-
-                if not hmac.compare_digest(signature, expected_signature):
-                    logger.warning(f"Invalid webhook signature received from {client_ip}")
-                    raise HTTPException(status_code=401, detail="Invalid webhook signature")
-            elif os.getenv('ENV') == 'production':
-                # Only log warning for non-internal IPs (reduce noise from load balancer)
+            if not signature:
+                # Always reject unsigned requests when signing key is configured
                 if not is_internal_ip:
-                    logger.warning(f"Webhook received without signature in production from {client_ip}")
+                    logger.warning(f"Webhook received without signature from {client_ip}")
                 raise HTTPException(status_code=401, detail="Missing webhook signature")
+
+            expected_signature = hmac.new(
+                PAYTRUST_SIGNING_KEY.encode('utf-8'),
+                body,
+                hashlib.sha256
+            ).hexdigest()
+
+            if not hmac.compare_digest(signature, expected_signature):
+                logger.warning(f"Invalid webhook signature received from {client_ip}")
+                raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
         payload = json.loads(body)
 
-        # Log full payload for debugging
+        # Log webhook receipt (redact sensitive fields for PCI compliance)
         logger.info(f"[PAYTRUST] ========== WEBHOOK RECEIVED ==========")
         logger.info(f"[PAYTRUST] Timestamp: {datetime.now().isoformat()}")
-        logger.info(f"[PAYTRUST] Raw payload: {json.dumps(payload, indent=2)}")
-        logger.info(f"[PAYTRUST] Headers: X-PayTrust-Signature={'present' if signature else 'absent'}")
+        safe_payload = {k: v for k, v in payload.items() if k != 'paymentMethodDetails'}
+        logger.info(f"[PAYTRUST] Payload (redacted): {json.dumps(safe_payload, indent=2)}")
+        logger.info(f"[PAYTRUST] Headers: Signature={'present' if signature else 'absent'}")
 
         # --- Idempotency Check ---
         webhook_id = payload.get("id") or payload.get("result", {}).get("id")
@@ -1538,7 +1713,7 @@ async def paytrust_webhook(request: Request):
         # PayTrust uses: COMPLETED (success), FAILED, DECLINED, PENDING, CHECKOUT
         logger.info(f"[PAYTRUST] Processing state: {state} for user {user_id}")
 
-        if state == "COMPLETED" or state == "SUCCESS":
+        if state == "COMPLETED":
             logger.info(f"[PAYTRUST] ✅ SUCCESS - Processing payment for user {user_id}")
 
             # Check if this is a subscription payment or one-time payment
@@ -1859,41 +2034,46 @@ async def paytrust_webhook(request: Request):
             else:
                 logger.warning(f"[PAYTRUST] ⚠️ No payment_id, subscription_id, or marketplace_purchase_id found in metadata for user {user_id}")
 
-        elif state == "FAIL" or state == "FAILED" or state == "DECLINED":
-            logger.warning(f"[PAYTRUST] ❌ FAILED/DECLINED - Payment failed for user {user_id}")
-            
-            # Handle failed payments
+        elif state in ("FAIL", "FAILED", "DECLINED", "CANCELLED"):
+            # PayTrust fires webhooks on COMPLETED, DECLINED, and CANCELLED (final states)
+            record_status = "cancelled" if state == "CANCELLED" else "failed"
+            logger.warning(f"[PAYTRUST] ❌ {state} - Payment {record_status} for user {user_id}")
+
+            # Handle failed/cancelled payments
             if payment_doc_id:
                 payment_ref = user_ref.collection('payments').document(payment_doc_id)
                 payment_doc = payment_ref.get()
                 if payment_doc.exists:
                     payment_ref.update({
-                        "status": "failed",
-                        "failedAt": firestore.SERVER_TIMESTAMP
+                        "status": record_status,
+                        f"{record_status}At": firestore.SERVER_TIMESTAMP,
+                        "paytrustState": state
                     })
-                    logger.info(f"Updated payment status to failed: {payment_doc_id}")
-            
+                    logger.info(f"Updated payment status to {record_status}: {payment_doc_id}")
+
             if subscription_doc_id:
                 sub_ref = user_ref.collection('subscriptions').document(subscription_doc_id)
                 sub_doc = sub_ref.get()
                 if sub_doc.exists:
                     sub_ref.update({
-                        "status": "failed",
-                        "failedAt": firestore.SERVER_TIMESTAMP
+                        "status": record_status,
+                        f"{record_status}At": firestore.SERVER_TIMESTAMP,
+                        "paytrustState": state
                     })
-                    logger.info(f"Updated subscription status to failed: {subscription_doc_id}")
+                    logger.info(f"Updated subscription status to {record_status}: {subscription_doc_id}")
 
             if marketplace_purchase_id:
                 purchase_ref = db.collection('marketplace_purchases').document(marketplace_purchase_id)
                 purchase_doc = purchase_ref.get()
                 if purchase_doc.exists:
                     purchase_ref.update({
-                        "status": "failed",
-                        "failedAt": firestore.SERVER_TIMESTAMP
+                        "status": record_status,
+                        f"{record_status}At": firestore.SERVER_TIMESTAMP,
+                        "paytrustState": state
                     })
-                    logger.info(f"Updated marketplace purchase status to failed: {marketplace_purchase_id}")
+                    logger.info(f"Updated marketplace purchase status to {record_status}: {marketplace_purchase_id}")
 
-            logger.info(f"[PAYTRUST] Failed payment processing complete for user {user_id}")
+            logger.info(f"[PAYTRUST] {state} payment processing complete for user {user_id}")
 
         elif state == "PENDING" or state == "CHECKOUT":
             # Payment is still processing
@@ -1925,16 +2105,31 @@ async def paytrust_webhook(request: Request):
 @app.get("/payment-status/{payment_id}")
 @limiter.limit("30/minute")
 async def check_payment_status(request: Request, payment_id: str, user_id: str):
-    """Allow frontend to check payment status"""
+    """Allow frontend to check payment status (authenticated)"""
     if not db:
         raise HTTPException(status_code=500, detail="Database not initialized.")
-    
+
+    # Verify user authentication
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    token = auth_header.split("Bearer ")[1]
+    try:
+        decoded_token = auth.verify_id_token(token)
+        if decoded_token['uid'] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+
     payment_ref = db.collection('users').document(user_id).collection('payments').document(payment_id)
     payment_doc = payment_ref.get()
-    
+
     if not payment_doc.exists:
         raise HTTPException(status_code=404, detail="Payment not found")
-    
+
     payment_data = payment_doc.to_dict()
     return {
         "status": payment_data.get("status"),

@@ -279,6 +279,7 @@ class VideoRequest(BaseModel):
 class PaymentRequest(BaseModel):
     userId: str = Field(..., min_length=1, max_length=128)
     customAmount: int = Field(..., ge=1, le=1000, description="Amount in EUR (1-1000)")
+    termsAccepted: bool = Field(..., description="User must accept Terms & Conditions")
 
     @validator('customAmount')
     def validate_amount(cls, v):
@@ -288,6 +289,12 @@ class PaymentRequest(BaseModel):
             raise ValueError('Minimum payment is €1')
         if v > 1000:
             raise ValueError('Maximum payment is €1,000')
+        return v
+
+    @validator('termsAccepted')
+    def validate_terms(cls, v):
+        if not v:
+            raise ValueError('You must accept the Terms & Conditions before purchasing')
         return v
 
 class SubscriptionRequest(BaseModel):
@@ -306,6 +313,13 @@ class MarketplacePurchaseRequest(BaseModel):
     price: float = Field(..., gt=0, le=10000, description="Price in EUR")
     sellerName: str = Field(..., min_length=1, max_length=100)
     sellerId: str = Field(..., min_length=1, max_length=128)
+    termsAccepted: bool = Field(..., description="User must accept Terms & Conditions")
+
+    @validator('termsAccepted')
+    def validate_terms(cls, v):
+        if not v:
+            raise ValueError('You must accept the Terms & Conditions before purchasing')
+        return v
 
 class AdminUserCreateRequest(BaseModel):
     email: EmailStr
@@ -610,12 +624,19 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
     # Create pending payment record in Firestore
     payment_ref = user_ref.collection('payments').document()
     payment_id = payment_ref.id
+    # Get client IP for legal record
+    client_ip = request.client.host if request.client else None
+
     payment_ref.set({
         "amount": amount,
         "creditsPurchased": credits_to_add,
         "createdAt": firestore.SERVER_TIMESTAMP,
         "status": "pending",
-        "type": "Purchase"
+        "type": "Purchase",
+        "termsAccepted": True,
+        "termsAcceptedAt": firestore.SERVER_TIMESTAMP,
+        "termsVersion": "2026-01",
+        "acceptedFromIp": client_ip
     })
     
     logger.info(f"Payment record created: {payment_id}", extra={"user_id": payment_request.userId, "amount": amount})
@@ -4082,6 +4103,9 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
     purchase_ref = db.collection('marketplace_purchases').document()
     purchase_id = purchase_ref.id
 
+    # Get client IP for legal record
+    client_ip = request.client.host if request.client else None
+
     purchase_ref.set({
         "buyerId": user_id,
         "buyerEmail": user_data.get("email"),
@@ -4096,7 +4120,11 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
         "platformFee": round(verified_price * 0.15, 2),  # 15% platform fee
         "sellerEarnings": round(verified_price * 0.85, 2),  # 85% to seller
         "status": "pending",
-        "createdAt": firestore.SERVER_TIMESTAMP
+        "createdAt": firestore.SERVER_TIMESTAMP,
+        "termsAccepted": True,
+        "termsAcceptedAt": firestore.SERVER_TIMESTAMP,
+        "termsVersion": "2026-01",
+        "acceptedFromIp": client_ip
     })
 
     logger.info(f"Marketplace purchase record created: {purchase_id}", extra={

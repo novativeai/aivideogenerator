@@ -2255,6 +2255,162 @@ def generate_video_thumbnail(video_url: str, user_id: str, generation_ref_path: 
         logger.warning(f"Thumbnail generation skipped for {generation_ref_path}")
 
 
+def _extract_output_urls(fal_result: dict) -> list[str]:
+    """Extract output URLs from fal.ai response."""
+    output_urls = []
+    if "video" in fal_result:
+        video_data = fal_result["video"]
+        if isinstance(video_data, dict) and "url" in video_data:
+            output_urls = [video_data["url"]]
+        elif isinstance(video_data, str):
+            output_urls = [video_data]
+    elif "images" in fal_result:
+        output_urls = [img["url"] if isinstance(img, dict) else img for img in fal_result["images"]]
+    elif "image" in fal_result:
+        img_data = fal_result["image"]
+        if isinstance(img_data, dict) and "url" in img_data:
+            output_urls = [img_data["url"]]
+        elif isinstance(img_data, str):
+            output_urls = [img_data]
+    elif "url" in fal_result:
+        output_urls = [fal_result["url"]]
+    return output_urls
+
+
+def _process_fal_result(
+    fal_handle,
+    transaction_id: str,
+    user_id: str,
+    model_id: str,
+    prompt: str,
+    credits_to_deduct: int,
+    is_image_model: bool,
+):
+    """Background task: wait for fal.ai result, save to Firestore, handle errors."""
+    transaction_ref = db.collection('generation_transactions').document(transaction_id)
+    user_ref = db.collection('users').document(user_id)
+    output_type = "image" if is_image_model else "video"
+
+    try:
+        # Block until fal.ai completes (this runs in background, not tied to HTTP request)
+        fal_result = fal_handle.get()
+
+        output_urls = _extract_output_urls(fal_result)
+
+        if not output_urls:
+            logger.error(f"Unexpected fal.ai response format: {list(fal_result.keys())}")
+            raise ValueError(f"No output URLs returned. Keys: {list(fal_result.keys())}")
+
+        # Update transaction as completed
+        transaction_ref.update({
+            'status': 'completed',
+            'completedAt': firestore.SERVER_TIMESTAMP,
+            'outputUrls': output_urls
+        })
+
+        # Save to user's generations subcollection
+        for output_url in output_urls:
+            generation_ref = user_ref.collection('generations').document()
+            generation_ref.set({
+                'outputUrl': output_url,
+                'outputType': output_type,
+                'prompt': prompt,
+                'modelId': model_id,
+                'status': 'completed',
+                'createdAt': firestore.SERVER_TIMESTAMP,
+                'transactionId': transaction_id
+            })
+
+            # Generate thumbnail for videos
+            if output_type == "video":
+                try:
+                    generate_video_thumbnail(output_url, user_id, generation_ref.path)
+                except Exception as thumb_e:
+                    logger.warning(f"Thumbnail generation failed: {thumb_e}")
+
+        logger.info(f"[BG] Generation completed for user {user_id}, transaction {transaction_id}. Outputs: {len(output_urls)}")
+
+    except Exception as e:
+        error_type = type(e).__name__
+        error_message = str(e)
+        logger.error(f"[BG] Generation failed for user {user_id}, transaction {transaction_id}: {error_type}: {error_message}")
+
+        # Build clean error message for frontend polling
+        error_lower = error_message.lower()
+        if 'content_policy_violation' in error_lower or 'content policy' in error_lower:
+            clean_error = "CONTENT_POLICY: Your prompt was flagged by the AI model's content filter. Please modify your prompt and try again. Your credits have been refunded."
+        elif 'downstream_service' in error_lower:
+            clean_error = "The AI model service is temporarily unavailable. Please try again later. Your credits have been refunded."
+        elif 'timeout' in error_lower or 'timed out' in error_lower:
+            clean_error = "The generation request timed out. Please try again. Your credits have been refunded."
+        else:
+            clean_error = f"Generation failed: {error_type}. Your credits have been refunded. Please try again."
+
+        # Update transaction as failed
+        transaction_ref.update({
+            'status': 'failed_generation',
+            'error': clean_error,
+            'errorType': error_type,
+            'errorRaw': error_message[:500],
+            'failedAt': firestore.SERVER_TIMESTAMP,
+            'refundAttempted': True
+        })
+
+        # Refund credits
+        try:
+            user_ref.update({'credits': firestore.Increment(credits_to_deduct)})
+            transaction_ref.update({
+                'refundStatus': 'completed',
+                'refundedAt': firestore.SERVER_TIMESTAMP
+            })
+            logger.info(f"[BG] Refunded {credits_to_deduct} credits to user {user_id}")
+        except Exception as refund_e:
+            logger.critical(f"[BG] FAILED TO REFUND {credits_to_deduct} credits for user {user_id}: {refund_e}")
+            try:
+                db.collection('failed_credit_refunds').add({
+                    'userId': user_id,
+                    'creditsAmount': credits_to_deduct,
+                    'transactionId': transaction_id,
+                    'originalError': error_message[:500],
+                    'refundError': str(refund_e),
+                    'createdAt': firestore.SERVER_TIMESTAMP,
+                    'resolved': False,
+                    'retryCount': 0
+                })
+                transaction_ref.update({
+                    'refundStatus': 'failed',
+                    'refundError': str(refund_e)
+                })
+            except Exception as log_e:
+                logger.critical(f"[BG] CRITICAL: Failed to log refund failure for user {user_id}: {log_e}")
+
+
+@app.get("/generation-status/{transaction_id}")
+@limiter.limit("60/minute")
+async def get_generation_status(request: Request, transaction_id: str):
+    """Poll endpoint for async generation status."""
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+
+    transaction_ref = db.collection('generation_transactions').document(transaction_id)
+    transaction_doc = transaction_ref.get()
+
+    if not transaction_doc.exists:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    data = transaction_doc.to_dict()
+
+    status = data.get('status', 'unknown')
+    result: dict = {"status": status, "transaction_id": transaction_id}
+
+    if status == 'completed':
+        result["output_urls"] = data.get('outputUrls', [])
+    elif status == 'failed_generation':
+        result["error"] = data.get('error', 'Generation failed')
+
+    return result
+
+
 @app.post("/generate-video")
 @limiter.limit("10/minute")
 async def generate_media(request: Request, video_request: VideoRequest, background_tasks: BackgroundTasks):
@@ -2414,174 +2570,81 @@ async def generate_media(request: Request, video_request: VideoRequest, backgrou
         else:
             raise ValueError(f"Model {video_request.model_id} has no valid endpoint configured")
 
-        # Call fal.ai API
-        logger.info(f"Calling fal.ai: {model_endpoint} for user {video_request.user_id}")
-        fal_result = fal_client.run(model_endpoint, arguments=api_params)
+        # Submit to fal.ai asynchronously (non-blocking)
+        logger.info(f"Submitting to fal.ai: {model_endpoint} for user {video_request.user_id}")
+        fal_handle = fal_client.submit(model_endpoint, arguments=api_params)
+        request_id = fal_handle.request_id
+        logger.info(f"fal.ai request submitted: {request_id} for transaction {transaction_id}")
 
-        # Extract output URLs from fal.ai response
-        output_urls = []
-        if "video" in fal_result:
-            # Video output (most video models)
-            video_data = fal_result["video"]
-            if isinstance(video_data, dict) and "url" in video_data:
-                output_urls = [video_data["url"]]
-            elif isinstance(video_data, str):
-                output_urls = [video_data]
-        elif "images" in fal_result:
-            # Multiple image outputs (Nano Banana Pro)
-            output_urls = [img["url"] if isinstance(img, dict) else img for img in fal_result["images"]]
-        elif "image" in fal_result:
-            # Single image output
-            img_data = fal_result["image"]
-            if isinstance(img_data, dict) and "url" in img_data:
-                output_urls = [img_data["url"]]
-            elif isinstance(img_data, str):
-                output_urls = [img_data]
-        elif "url" in fal_result:
-            # Direct URL in response
-            output_urls = [fal_result["url"]]
-        else:
-            logger.error(f"Unexpected fal.ai response format: {list(fal_result.keys())}")
-            raise TypeError(f"Unexpected fal.ai response format. Keys: {list(fal_result.keys())}")
-
-        if not output_urls:
-            raise ValueError("No output URLs returned from fal.ai")
-
-        # Update transaction as completed
+        # Save fal.ai request ID to transaction for tracking
         transaction_ref.update({
-            'status': 'completed',
-            'completedAt': firestore.SERVER_TIMESTAMP,
-            'outputUrls': output_urls
+            'status': 'processing',
+            'falRequestId': request_id,
+            'falEndpoint': model_endpoint,
+            'submittedAt': firestore.SERVER_TIMESTAMP
         })
 
-        # Save to user's generations subcollection for history display
         # Determine output type based on model configuration
         is_image_model = "t2i" in model_config
-        output_type = "image" if is_image_model else "video"
 
-        # Save each output to the user's generations subcollection
-        for output_url in output_urls:
-            generation_ref = user_ref.collection('generations').document()
-            generation_ref.set({
-                'outputUrl': output_url,
-                'outputType': output_type,
-                'prompt': api_params.get('prompt', ''),
-                'modelId': video_request.model_id,
-                'status': 'completed',
-                'createdAt': firestore.SERVER_TIMESTAMP,
-                'transactionId': transaction_id
-            })
+        # Process result in background task (survives proxy timeouts)
+        background_tasks.add_task(
+            _process_fal_result,
+            fal_handle,
+            transaction_id,
+            video_request.user_id,
+            video_request.model_id,
+            api_params.get('prompt', ''),
+            credits_to_deduct,
+            is_image_model,
+        )
 
-            # Queue background thumbnail generation for video outputs
-            if output_type == "video":
-                background_tasks.add_task(
-                    generate_video_thumbnail,
-                    output_url,
-                    video_request.user_id,
-                    generation_ref.path,
-                )
-
-        logger.info(f"Generation completed for user {video_request.user_id}, transaction {transaction_id}. Outputs: {len(output_urls)}")
-        return {"output_urls": output_urls}
+        logger.info(f"Generation submitted for user {video_request.user_id}, transaction {transaction_id}. Polling via /generation-status/{transaction_id}")
+        return {"transaction_id": transaction_id, "status": "processing"}
 
     except Exception as e:
-        # Extract detailed error information
+        # This catches pre-submission errors (credit deduction, param parsing, fal submit failure)
         error_type = type(e).__name__
         error_message = str(e)
-        error_traceback = traceback.format_exc()
+        logger.error(f"Pre-submission error for user {video_request.user_id}: {error_type}: {error_message}")
 
-        # Try to extract fal.ai specific error details if available
-        fal_error_details = {}
-        if hasattr(e, 'response'):
-            try:
-                fal_error_details['response'] = str(e.response)
-            except Exception:
-                pass
-        if hasattr(e, 'status_code'):
-            fal_error_details['status_code'] = e.status_code
-        if hasattr(e, 'body'):
-            try:
-                fal_error_details['body'] = str(e.body)
-            except Exception:
-                pass
-        if hasattr(e, 'message'):
-            fal_error_details['message'] = e.message
+        # Update transaction as failed
+        try:
+            transaction_ref.update({
+                'status': 'failed_submission',
+                'error': error_message,
+                'errorType': error_type,
+                'failedAt': firestore.SERVER_TIMESTAMP,
+                'refundAttempted': True
+            })
+        except Exception:
+            pass
 
-        # Log comprehensive error details
-        logger.error(f"""
-========== FAL.AI GENERATION ERROR ==========
-User ID: {video_request.user_id}
-Model ID: {video_request.model_id}
-Transaction ID: {transaction_id}
-Credits to refund: {credits_to_deduct}
-Error Type: {error_type}
-Error Message: {error_message}
-Fal.ai Details: {json.dumps(fal_error_details) if fal_error_details else 'N/A'}
-API Params (sanitized): {json.dumps({k: v for k, v in api_params.items() if not (isinstance(v, str) and (v.startswith('data:') or len(v) > 200))})}
-Traceback:
-{error_traceback}
-=============================================""")
-
-        # Update transaction as failed with detailed error info
-        transaction_ref.update({
-            'status': 'failed_generation',
-            'error': error_message,
-            'errorType': error_type,
-            'errorDetails': fal_error_details if fal_error_details else None,
-            'failedAt': firestore.SERVER_TIMESTAMP,
-            'refundAttempted': True
-        })
-
-        # --- REFUND WITH FAILED REFUND TRACKING ---
+        # Refund credits
         try:
             user_ref.update({'credits': firestore.Increment(credits_to_deduct)})
             transaction_ref.update({
                 'refundStatus': 'completed',
                 'refundedAt': firestore.SERVER_TIMESTAMP
             })
-            logger.info(f"Successfully refunded {credits_to_deduct} credits to user {video_request.user_id}")
+            logger.info(f"Refunded {credits_to_deduct} credits to user {video_request.user_id}")
         except Exception as refund_e:
-            # CRITICAL: Log and store failed refund for manual resolution
-            logger.critical(f"FAILED TO REFUND {credits_to_deduct} CREDITS for user {video_request.user_id}. Error: {refund_e}")
-
-            # Store in failed_credit_refunds collection for manual resolution
+            logger.critical(f"FAILED TO REFUND {credits_to_deduct} credits for user {video_request.user_id}: {refund_e}")
             try:
                 db.collection('failed_credit_refunds').add({
                     'userId': video_request.user_id,
                     'creditsAmount': credits_to_deduct,
                     'transactionId': transaction_id,
-                    'originalError': str(e),
+                    'originalError': error_message,
                     'refundError': str(refund_e),
                     'createdAt': firestore.SERVER_TIMESTAMP,
                     'resolved': False,
                     'retryCount': 0
                 })
-
-                # Update transaction with refund failure
-                transaction_ref.update({
-                    'refundStatus': 'failed',
-                    'refundError': str(refund_e)
-                })
             except Exception as log_e:
-                logger.critical(f"CRITICAL: Failed to log refund failure for user {video_request.user_id}: {log_e}")
+                logger.critical(f"CRITICAL: Failed to log refund failure: {log_e}")
 
-        # Construct user-friendly error message based on error type
-        error_lower = error_message.lower()
-
-        if 'content_policy_violation' in error_lower or 'content policy' in error_lower or 'safety' in error_lower and 'filter' in error_lower:
-            user_error_message = "CONTENT_POLICY: Your prompt was flagged by the AI model's content filter. Please modify your prompt and try again. Your credits have been refunded."
-        elif 'downstream_service' in error_lower:
-            user_error_message = "The AI model service is temporarily unavailable. Please try again later. Your credits have been refunded."
-        elif 'file_download' in error_lower:
-            user_error_message = "Failed to process the input image. Please ensure it is accessible and try again. Your credits have been refunded."
-        elif 'timeout' in error_lower or 'timed out' in error_lower:
-            user_error_message = "The generation request timed out. Please try again. Your credits have been refunded."
-        elif 'rate' in error_lower and 'limit' in error_lower:
-            user_error_message = "Rate limit exceeded. Please wait a moment and try again. Your credits have been refunded."
-        else:
-            user_error_message = f"Generation failed: {error_type}. Your credits have been refunded. Please try again."
-
-        raise HTTPException(status_code=500, detail=user_error_message)
+        raise HTTPException(status_code=500, detail=f"Generation failed: {error_message}. Your credits have been refunded.")
 
 # ========================
 # === ADMIN ENDPOINTS ===

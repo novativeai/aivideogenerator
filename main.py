@@ -2565,18 +2565,21 @@ Traceback:
             except Exception as log_e:
                 logger.critical(f"CRITICAL: Failed to log refund failure for user {video_request.user_id}: {log_e}")
 
-        # Construct user-friendly error message with details
-        user_error_message = f"Generation failed ({error_type}): {error_message}"
+        # Construct user-friendly error message based on error type
+        error_lower = error_message.lower()
 
-        # Add specific hints for common fal.ai errors
-        if 'downstream_service' in error_message.lower():
-            user_error_message += " - The AI model service is temporarily unavailable. Please try again later."
-        elif 'file_download' in error_message.lower():
-            user_error_message += " - Failed to process the input image. Please ensure it is accessible."
-        elif 'timeout' in error_message.lower() or 'timed out' in error_message.lower():
-            user_error_message += " - The generation request timed out. Please try again."
-        elif 'rate' in error_message.lower() and 'limit' in error_message.lower():
-            user_error_message += " - Rate limit exceeded. Please wait a moment and try again."
+        if 'content_policy_violation' in error_lower or 'content policy' in error_lower or 'safety' in error_lower and 'filter' in error_lower:
+            user_error_message = "CONTENT_POLICY: Your prompt was flagged by the AI model's content filter. Please modify your prompt and try again. Your credits have been refunded."
+        elif 'downstream_service' in error_lower:
+            user_error_message = "The AI model service is temporarily unavailable. Please try again later. Your credits have been refunded."
+        elif 'file_download' in error_lower:
+            user_error_message = "Failed to process the input image. Please ensure it is accessible and try again. Your credits have been refunded."
+        elif 'timeout' in error_lower or 'timed out' in error_lower:
+            user_error_message = "The generation request timed out. Please try again. Your credits have been refunded."
+        elif 'rate' in error_lower and 'limit' in error_lower:
+            user_error_message = "Rate limit exceeded. Please wait a moment and try again. Your credits have been refunded."
+        else:
+            user_error_message = f"Generation failed: {error_type}. Your credits have been refunded. Please try again."
 
         raise HTTPException(status_code=500, detail=user_error_message)
 

@@ -4,6 +4,6 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "echo \"$GCP_SERVICE_ACCOUNT_JSON\" > /tmp/gcp-creds.json && export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json && hypercorn main:app --bind \"[::]:$PORT\""
+    "startCommand": "echo \"$GCP_SERVICE_ACCOUNT_JSON\" > /tmp/gcp-creds.json && export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json && hypercorn main:app --bind \"[::]:$PORT\" --keep-alive 900 --read-timeout 900"
   }
 }

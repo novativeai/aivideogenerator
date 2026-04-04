@@ -42,7 +42,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # --- Resend Email Configuration ---
 RESEND_API_KEY = os.getenv('RESEND_API_KEY')
-RESEND_FROM_EMAIL = os.getenv('RESEND_FROM_EMAIL', 'onboarding@resend.dev')
+RESEND_FROM_EMAIL = os.getenv('RESEND_FROM_EMAIL', 'noreply@reelzila.studio')
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL')
 
 if RESEND_API_KEY:
@@ -411,11 +411,11 @@ FAL_MODELS = {
         "image_is_array": True,  # VEO 3.1 i2v expects image_urls as array
         "duration_suffix": "s"   # VEO 3.1 requires duration as "8s" not "8"
     },
-    "sora-2": {
-        "t2v": "fal-ai/sora-2/text-to-video",
-        "i2v": "fal-ai/sora-2/image-to-video/pro",
+    "pixverse-v6": {
+        "t2v": "fal-ai/pixverse/v6/text-to-video",
+        "i2v": "fal-ai/pixverse/v6/image-to-video",
         "image_param": "image_url",
-        "duration_type": "int"  # Sora 2 expects duration as integer (4, 8, 12)
+        "duration_type": "int"  # PixVerse v6 expects duration as integer
     },
     "kling-2.6": {
         "t2v": "fal-ai/kling-video/v2.6/pro/text-to-video",
@@ -458,13 +458,13 @@ MODEL_CREDIT_PRICING = {
             }
         ]
     },
-    # Sora 2: ~$0.10/sec
-    "sora-2": {
-        "base": 4,
+    # PixVerse v6: ~$0.09/sec at 1080p, ~$0.045/sec at 720p
+    "pixverse-v6": {
+        "base": 5,
         "modifiers": [
             {
                 "param": "duration",
-                "values": {"4": 4, "8": 8, "12": 12},
+                "values": {"5": 5, "8": 7, "10": 9},
                 "type": "set"
             }
         ]
@@ -2549,7 +2549,7 @@ async def generate_media(request: Request, video_request: VideoRequest, backgrou
                 api_params["duration"] = f"{duration_str}{duration_suffix}"
                 logger.info(f"Duration formatted with suffix: {api_params['duration']}")
             elif duration_type == "int":
-                # Sora 2, Kling need integer format
+                # PixVerse v6, Kling need integer format
                 duration_str = str(duration_val).rstrip('s')  # Remove any suffix
                 api_params["duration"] = int(duration_str)
                 logger.info(f"Duration converted to int: {api_params['duration']}")

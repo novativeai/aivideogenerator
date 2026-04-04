@@ -14,9 +14,9 @@ MODEL_CREDIT_PRICING = {
             {"param": "generate_audio", "values": {"false": 0.5}, "type": "multiply"}
         ]
     },
-    "sora-2": {
-        "base": 4,
-        "modifiers": [{"param": "duration", "values": {"4": 4, "8": 8, "12": 12}, "type": "set"}]
+    "pixverse-v6": {
+        "base": 5,
+        "modifiers": [{"param": "duration", "values": {"5": 5, "8": 7, "10": 9}, "type": "set"}]
     },
     "kling-2.6": {
         "base": 5,
@@ -106,15 +106,15 @@ class TestCalculateCreditsBasicModels:
         result = calculate_credits("veo-3.1", {})
         assert result == 32  # Base credits
 
-    def test_sora_2_default_params(self):
-        """Test Sora 2 with default 4-second duration."""
-        result = calculate_credits("sora-2", {"duration": "4"})
-        assert result == 4
+    def test_pixverse_v6_default_params(self):
+        """Test PixVerse v6 with default 5-second duration."""
+        result = calculate_credits("pixverse-v6", {"duration": "5"})
+        assert result == 5
 
-    def test_sora_2_no_duration(self):
-        """Test Sora 2 with no duration specified uses base credits."""
-        result = calculate_credits("sora-2", {})
-        assert result == 4  # Base credits
+    def test_pixverse_v6_no_duration(self):
+        """Test PixVerse v6 with no duration specified uses base credits."""
+        result = calculate_credits("pixverse-v6", {})
+        assert result == 5  # Base credits
 
     def test_kling_2_6_default_params(self):
         """Test Kling 2.6 with default 5-second duration."""
@@ -189,21 +189,21 @@ class TestCalculateCreditsParameterVariations:
         result = calculate_credits("veo-3.1", {"duration": "8", "generate_audio": "true"})
         assert result == 32  # No reduction for "true"
 
-    # Sora 2 duration variations
-    def test_sora_2_duration_4_seconds(self):
-        """Test Sora 2 with 4-second duration."""
-        result = calculate_credits("sora-2", {"duration": "4"})
-        assert result == 4
+    # PixVerse v6 duration variations
+    def test_pixverse_v6_duration_5_seconds(self):
+        """Test PixVerse v6 with 5-second duration."""
+        result = calculate_credits("pixverse-v6", {"duration": "5"})
+        assert result == 5
 
-    def test_sora_2_duration_8_seconds(self):
-        """Test Sora 2 with 8-second duration."""
-        result = calculate_credits("sora-2", {"duration": "8"})
-        assert result == 8
+    def test_pixverse_v6_duration_8_seconds(self):
+        """Test PixVerse v6 with 8-second duration."""
+        result = calculate_credits("pixverse-v6", {"duration": "8"})
+        assert result == 7
 
-    def test_sora_2_duration_12_seconds(self):
-        """Test Sora 2 with 12-second duration."""
-        result = calculate_credits("sora-2", {"duration": "12"})
-        assert result == 12
+    def test_pixverse_v6_duration_10_seconds(self):
+        """Test PixVerse v6 with 10-second duration."""
+        result = calculate_credits("pixverse-v6", {"duration": "10"})
+        assert result == 9
 
     # Kling 2.6 duration variations
     def test_kling_2_6_duration_5_seconds(self):
@@ -410,14 +410,14 @@ class TestCalculateCreditsConsistency:
         assert modifiers[1]["param"] == "generate_audio"
         assert modifiers[1]["values"] == {"false": 0.5}
 
-    def test_sora_pricing_matches_config(self):
-        """Verify Sora 2 pricing matches MODEL_CREDIT_PRICING."""
-        config = MODEL_CREDIT_PRICING["sora-2"]
-        assert config["base"] == 4
+    def test_pixverse_pricing_matches_config(self):
+        """Verify PixVerse v6 pricing matches MODEL_CREDIT_PRICING."""
+        config = MODEL_CREDIT_PRICING["pixverse-v6"]
+        assert config["base"] == 5
         modifiers = config.get("modifiers", [])
         assert len(modifiers) == 1
         assert modifiers[0]["param"] == "duration"
-        assert modifiers[0]["values"] == {"4": 4, "8": 8, "12": 12}
+        assert modifiers[0]["values"] == {"5": 5, "8": 7, "10": 9}
 
     def test_kling_pricing_matches_config(self):
         """Verify Kling 2.6 pricing matches MODEL_CREDIT_PRICING."""

@@ -2197,18 +2197,14 @@ def extract_and_upload_thumbnail(video_url: str, user_id: str, storage_prefix: s
     tmp_video_path = None
     tmp_thumb_path = None
     try:
-        # Download enough of the video to extract a frame (first 2 MB)
-        resp = requests.get(video_url, stream=True, timeout=30)
+        # Download the full video (fal.media moov atom is at end, partial downloads fail)
+        resp = requests.get(video_url, stream=True, timeout=120)
         resp.raise_for_status()
 
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
             tmp_video_path = tmp.name
-            downloaded = 0
-            for chunk in resp.iter_content(chunk_size=8192):
+            for chunk in resp.iter_content(chunk_size=65536):
                 tmp.write(chunk)
-                downloaded += len(chunk)
-                if downloaded > 2 * 1024 * 1024:
-                    break
 
         # Extract frame at 0.5s using ffmpeg
         tmp_thumb_path = tmp_video_path.replace('.mp4', '.jpg')

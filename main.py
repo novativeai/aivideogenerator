@@ -2510,6 +2510,12 @@ async def generate_media(request: Request, video_request: VideoRequest, backgrou
     try:
         api_params = video_request.params.copy()
 
+        # Strip params with placeholder/empty values that the API won't accept
+        for key in list(api_params.keys()):
+            val = api_params[key]
+            if val is None or val == "" or val == "none":
+                api_params.pop(key)
+
         # Determine which endpoint to use (T2V, I2V, or T2I)
         image_param = model_config.get("image_param")
         has_image = False

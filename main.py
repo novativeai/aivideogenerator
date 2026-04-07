@@ -729,7 +729,6 @@ async def create_payment(request: Request, payment_request: PaymentRequest):
     # PayTrust payment payload
     payload = {
         "paymentType": "DEPOSIT",
-        "paymentMethod": "BASIC_CARD",
         "amount": amount,
         "currency": "EUR",
         "description": generate_paytrust_description(payment_id),
@@ -1514,7 +1513,6 @@ async def create_subscription(request: Request, sub_request: SubscriptionRequest
 
     payload = {
         "paymentType": "DEPOSIT",
-        "paymentMethod": "BASIC_CARD",
         "amount": amount,
         "currency": "EUR",
         "description": generate_paytrust_description(subscription_id),
@@ -4429,7 +4427,6 @@ async def create_marketplace_purchase_payment(request: Request, purchase_request
 
     payload = {
         "paymentType": "DEPOSIT",
-        "paymentMethod": "BASIC_CARD",
         "amount": verified_price,  # Use verified price from database
         "currency": "EUR",
         "description": generate_paytrust_description(purchase_id),

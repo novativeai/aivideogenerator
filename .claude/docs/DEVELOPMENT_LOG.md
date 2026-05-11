@@ -9,7 +9,7 @@ This is a living document that tracks project development progress. Claude shoul
 **Focus**: Production stability and payment system
 
 ### Active Tasks
-- [ ] Renew PayTrust API key (expired Jan 9, 2026)
+- [ ] PayTrust "Oops something went wrong" - may require PayTrust dashboard configuration
 
 ### Completed This Sprint
 - [x] Implement marketplace purchase payment endpoint
@@ -27,7 +27,395 @@ This is a living document that tracks project development progress. Claude shoul
 
 ## Recent Changes
 
+### 2026-02-02
+
+#### Profile Completion Flow for Google Sign-In & Billing Details (COMPLETED)
+Implemented mandatory profile completion for Google sign-in users and billing details editing.
+
+**Changes:**
+- **New `/complete-profile` page**: Mandatory form for Google sign-in users to fill phone, country, address, city, postCode before accessing the platform
+- **LayoutManager redirect**: Authenticated users with `profileComplete: false` are redirected to `/complete-profile` on all protected routes
+- **Google sign-in fix**: Both signup and signin pages now redirect to `/complete-profile` instead of `/` when profile is incomplete
+- **Billing details in Account Settings**: Added editable billing details section (address, city, postCode, country, phone) between Billing History and Account Settings
+- **Payment path protection**: Added payment/marketplace purchase paths to PUBLIC_PATHS to prevent redirect during payment confirmation flow
+- **Data flow audit**: Full end-to-end audit of 8 scenarios covering email signup, Google signup, signin, payment, billing edit, and edge cases
+
+**Files Changed:**
+- `video-generator-frontend/src/app/complete-profile/page.tsx` - NEW: Profile completion page
+- `video-generator-frontend/src/components/LayoutManager.tsx` - Profile redirect logic + PUBLIC_PATHS
+- `video-generator-frontend/src/app/signup/page.tsx` - Google sign-in redirects to `/complete-profile`
+- `video-generator-frontend/src/app/signin/page.tsx` - Google/email sign-in redirects to `/complete-profile` when incomplete
+- `video-generator-frontend/src/app/account/page.tsx` - Billing details section, billing state/handler
+
+---
+
+#### Admin App Overhaul - Credits System, Invoice, Billing Fixes (COMPLETED)
+Comprehensive admin app update to align with the credits-based system.
+
+**Changes:**
+- **Generation count fix**: Backend now queries `users/{uid}/generations` subcollection instead of hardcoding 0
+- **Credits display**: Dashboard shows user credits and generation count instead of plan names (Starter/Pro)
+- **Subscription removal**: Removed all "Subscription" references from transaction type dropdowns, replaced with "Credit Purchase" and "Marketplace Purchase"
+- **Invoice rewrite**: Admin invoice now matches the main app's professional B&W design with company/customer billing details, proper € formatting, items table, PAID badge, and footer
+- **Billing validation fix**: Made all billing fields optional in `AdminBillingUpdateRequest` to prevent validation errors when submitting partial data. Added `country` and `postCode` fields.
+- **Back button**: Added navigation back to dashboard on user detail page
+- **Currency fix**: Changed `$` to `€` across admin transaction displays
+
+**Files Changed:**
+- `video-generator-backend/main.py` - Admin endpoints: generation count query, credits in response, billing model fix
+- `video-generator-admin/src/app/page.tsx` - Dashboard: credits instead of plan
+- `video-generator-admin/src/app/users/[userId]/page.tsx` - Back button, credits/generations display, billing form update, € currency
+- `video-generator-admin/src/components/admin/EditTransactionPopup.tsx` - Remove Subscription type, € label
+- `video-generator-admin/src/lib/Generator.ts` - Full invoice rewrite matching main app design
+
+---
+
+### 2026-01-27
+
+#### Contact Email Update for Functional Communications (COMPLETED)
+Updated contact email to `contact@reelzila.studio` across functional areas.
+
+**Changes:**
+- Invoice PDF: Updated company email in header and notes section
+- Marketplace purchase confirmation email: Updated support contact link
+
+**Files Changed:**
+- `video-generator-frontend/src/lib/pdfGenerator.ts`
+- `video-generator-backend/email_templates.py`
+
+**Note:** Legal documents (terms, privacy, refund) retain their original email addresses as requested.
+
+---
+
+#### Professional Invoice PDF (COMPLETED)
+Rewrote invoice generator with industry-standard formatting.
+
+**Features Added:**
+- Company header with branding (Reelzila + tagline)
+- Invoice number format: `INV-YYYYMM-XXXXXXXX`
+- Bill To section with customer name and email
+- Itemized table with Description, Quantity, Unit Price, Amount
+- Totals section with Subtotal, VAT (Included), Total
+- Green "PAID" badge for paid transactions
+- Payment information box with transaction ID
+- Notes section with thank you message and contact info
+- Professional footer with website, email, page number
+
+**Files Changed:** `video-generator-frontend/src/lib/pdfGenerator.ts`
+
+---
+
+#### Multi-Output Navigation for Image Generation (COMPLETED)
+Added chevron navigation for image models that return multiple outputs.
+
+**Issue:** Nano Banana Pro model can return multiple images but only one was displayed.
+
+**Changes:**
+- Added `outputUrls[]` array and `currentOutputIndex` state
+- Added left/right chevron navigation buttons
+- Added indicator dots showing current position
+- Video models continue to return single output as before
+
+**Files Changed:** `video-generator-frontend/src/app/generator/page.tsx`
+
+---
+
+#### Sora-2 Resolution Fix (COMPLETED)
+Fixed API error for Sora-2 model resolution configuration.
+
+**Issue:** fal.ai API only allows 720p for Sora-2, but config had 1080p as default.
+
+**Fix:** Updated model config to only offer 720p option.
+
+**Files Changed:** `video-generator-frontend/src/lib/modelConfigs.ts`
+
+---
+
+#### Generation Timeout Implementation (COMPLETED)
+Added 10-minute timeout for long-running video generations.
+
+**Issue:** Some generations would hang indefinitely without returning.
+
+**Fix:** Added `AbortController` with 600000ms timeout to fetch calls.
+
+**Files Changed:** `video-generator-frontend/src/app/generator/page.tsx`
+
+---
+
+#### Unified Card Styles Across App (COMPLETED)
+Standardized card appearance for History, Purchased Videos, and Marketplace sections.
+
+**Consistent Style:**
+- Square aspect ratio container
+- `object-contain` for natural video/image display
+- Play button on hover for videos
+- Download button (top right)
+- Monetize button on History cards (top left)
+- Overlaid info at bottom
+
+**Files Changed:**
+- `video-generator-frontend/src/components/HistoryCard.tsx`
+- `video-generator-frontend/src/app/marketplace/page.tsx` (PurchasedVideoCardMarketplace component)
+
+---
+
+#### Marketplace Thumbnail Fix (COMPLETED)
+Fixed missing thumbnails for user-pushed videos.
+
+**Issue:** Videos pushed to marketplace had no thumbnails while pre-populated ones did.
+
+**Root Cause:** Code set `thumbnailUrl: isImage ? generation.outputUrl : undefined` which made it undefined for videos.
+
+**Fix:** Changed to `thumbnailUrl: generation.outputUrl` for all content types.
+
+**Files Changed:** `video-generator-frontend/src/app/marketplace/create/page.tsx`
+
+---
+
+#### Purchase Success Page 404 Fix (COMPLETED)
+Fixed broken "View My Purchases" button after checkout.
+
+**Issue:** Button linked to `/dashboard` which was 404.
+
+**Fix:** Changed to `/account?tab=purchased` and added URL param support to account page using `useSearchParams`.
+
+**Files Changed:**
+- `video-generator-frontend/src/app/marketplace/purchase/success/page.tsx`
+- `video-generator-frontend/src/app/account/page.tsx`
+
+---
+
+### 2026-01-24
+
+#### Marketplace Purchased Videos - Adaptive Display (COMPLETED)
+Fixed video display in "Your Purchases" section on marketplace page.
+
+**Issue:** 9:16 portrait videos were being cropped to 16:9 wide format.
+
+**Root Cause:** Marketplace page had its own inline rendering of purchased videos with:
+- `aspect-video` (forced 16:9)
+- `object-cover` (crops to fill)
+
+**Fix Applied:**
+- Changed to `aspect-square` container
+- Changed to `object-contain` for natural aspect ratio display
+- Made background transparent to match site background
+- Added `rounded-lg` border radius to videos
+
+**Files Changed:**
+- `video-generator-frontend/src/app/marketplace/page.tsx`
+- `video-generator-frontend/src/components/PurchasedVideos.tsx` (account page version)
+
+---
+
+#### Blog Page - CTA Reduction & Cover Image Fix (COMPLETED)
+Improved blog page UX and fixed missing cover images.
+
+**Issues Fixed:**
+1. Too many CTAs (header button + footer section with 2 buttons)
+2. Cover images not displaying - Medium embeds images in description HTML, not `thumbnail` field
+
+**Changes:**
+- Removed header "Follow us on Medium" button
+- Simplified footer to single subtle text link
+- Added `extractImageFromHtml()` function to parse first `<img>` from Medium's description HTML
+- Using native `<img>` tag to avoid Next.js Image domain configuration issues
+
+**Files Changed:** `video-generator-frontend/src/app/blog/page.tsx`
+
+---
+
+### 2026-01-23
+
+#### Admin Dashboard Audit & Fix (COMPLETED)
+Comprehensive audit of admin dashboard data flow and Firestore integration.
+
+**Audit Findings:**
+
+| Section | Status | Notes |
+|---------|--------|-------|
+| Authentication | ✅ Working | Firebase Auth + Firestore admin verification |
+| Main Dashboard | ✅ Working | Stats, user list, create user, CSV upload |
+| User Management | ✅ Working | View profiles, edit, reset password, transactions |
+| Seller Management | ✅ Working | List, verify, suspend, unsuspend sellers |
+| Payout Management | ✅ Working | View, approve, reject, complete with bank details |
+| Marketplace | ❌ Was Broken | Fixed - getIdToken() was missing from AuthContext |
+
+**Critical Fix Applied:**
+- **AuthContext.tsx**: Added missing `getIdToken()` function to context
+- Marketplace page was calling `useAuth().getIdToken()` but function didn't exist
+- All CRUD operations in marketplace now work
+
+**Collection Names Verified:**
+- All Firestore collections match between frontend, admin, and backend
+- `users`, `marketplace_listings`, `users/{id}/payout_requests` - all correct
+
+**Files Changed:** `video-generator-admin/src/context/AuthContext.tsx`
+
+---
+
+#### Masonry Layout for Marketplace (COMPLETED)
+Implemented Pinterest-style masonry layout for marketplace grid.
+
+**Changes:**
+- Replaced CSS Grid with CSS columns for natural flow
+- Videos now display with their true aspect ratios (portrait/landscape/square)
+- Added `breakInside: avoid` to prevent card splitting
+- Updated loading skeleton to match masonry style
+
+**Files Changed:** `video-generator-frontend/src/components/MarketplaceGrid.tsx`
+
+---
+
+### 2026-01-22
+
+#### Video Display & Purchase Flow Fixes (COMPLETED)
+Fixed multiple UI issues with video display and marketplace purchase flow.
+
+**Issues Fixed:**
+1. Skeleton loaders causing infinite loading in History and Marketplace sections
+2. Videos being cropped due to fixed aspect ratios in Marketplace, My Library, and History
+3. Purchase success page redirecting to Marketplace instead of showing success state
+
+**Frontend Fixes:**
+- **HistoryCard.tsx**: Removed skeleton loading, added dynamic aspect ratio using CSS `aspectRatio` property that adapts to video dimensions
+- **MarketplaceGrid.tsx**: Removed skeleton/PremiumSkeleton imports, added dynamic aspect ratio per card, changed to simple loader during grid loading
+- **PurchasedVideos.tsx**: Complete rewrite with memoized `PurchasedVideoCard` component, dynamic aspect ratio, added download button on hover
+- **marketplace/purchase/success/page.tsx**: Complete rewrite with:
+  - Proper auth loading state handling (waits for AuthContext)
+  - Multiple page states (loading, confirming, success, pending, error)
+  - Auto-retry logic for pending payments (3 retries, 3s apart)
+  - Clear error states with retry buttons
+  - No more premature redirects to marketplace
+
+**Technical Details:**
+- Videos now use `object-cover` to fill their dynamically-sized containers
+- Aspect ratio extracted from video metadata via `onLoadedMetadata` handler
+- CSS `aspectRatio` style property used instead of fixed AspectRatio component
+- Files changed: `video-generator-frontend/src/components/HistoryCard.tsx`, `MarketplaceGrid.tsx`, `PurchasedVideos.tsx`, `src/app/marketplace/purchase/success/page.tsx`
+
+---
+
+#### Email Notifications Fix (COMPLETED)
+Fixed missing email notifications for marketplace purchases and seller withdrawals.
+
+**Issues Found:**
+1. No confirmation email sent to buyer after marketplace purchase
+2. Seller withdrawal request not sending IBAN details to admin (endpoint existed but was never called)
+
+**Backend Fixes:**
+- Added `get_marketplace_purchase_confirmation_email` template to `email_templates.py`
+- Added email sending to `/marketplace/confirm-purchase` endpoint (sends to buyer)
+- Added email sending directly in `/seller/payout-request` endpoint (sends to admin with full IBAN)
+- Files changed: `video-generator-backend/main.py`, `video-generator-backend/email_templates.py`
+
+**Email Contents:**
+- Purchase confirmation: Video title, seller name, price, download link
+- Withdrawal request: Seller name, email, full IBAN, account holder, bank name, BIC, amount
+
+---
+
+### 2026-01-21
+
+#### Marketplace Purchase Confirmation Fix (COMPLETED)
+Fixed marketplace video purchases not working (video not appearing in purchased section).
+
+**Root Cause:** Frontend was using GET endpoint that only reads status, relying on webhook to complete purchase. Webhook signature verification was failing.
+
+**Backend:**
+- Added `/marketplace/confirm-purchase` POST endpoint that:
+  - Verifies buyer authentication
+  - Completes pending purchases
+  - Credits seller balance
+  - Creates seller transaction record
+  - Increments product sales count
+  - Creates purchased_videos record for buyer
+- Files changed: `video-generator-backend/main.py` (lines 666-790)
+
+**Frontend:**
+- Updated marketplace success page to call confirm endpoint instead of just reading status
+- Removed retry polling logic in favor of direct confirmation
+- Files changed: `video-generator-frontend/src/app/marketplace/purchase/success/page.tsx`
+
+**Tested:** Both credit purchases and marketplace purchases should now work correctly with PayTrust.
+
+---
+
+### 2026-01-15
+
+#### Testing Feedback Fixes (COMPLETED)
+Based on Reelzila-testing-feedback.pdf, implemented the following fixes:
+
+**Backend:**
+- Fixed VEO 3.1 generation parameters - `image_urls` now array, duration formatted with 's' suffix
+- Files changed: `video-generator-backend/main.py` (lines 217-221, 1231-1258)
+
+**Frontend:**
+- Removed "Powered by PayTrust" text from checkout modal
+- Fixed "Back to History" redirect to `/explore#history`
+- Added comprehensive ISO country list (195 countries) to signup
+- Fixed history video cropping: 16:9 aspect ratio for videos, object-contain
+- Created email verification redirect page at `/auth/action`
+- Added payment timeout handling (60s) with "Check Status" button
+- Unified payment messages ("Verifying Payment" instead of "Processing Payment")
+- Files changed:
+  - `src/components/PurchaseFormModal.tsx`
+  - `src/app/marketplace/create/page.tsx`
+  - `src/lib/countries.ts` (new file)
+  - `src/app/signup/page.tsx`
+  - `src/components/HistoryCard.tsx`
+  - `src/app/auth/action/page.tsx` (new file)
+  - `src/app/payment/pending/page.tsx`
+
+**Verified Working:**
+- PayTrust webhook properly updates Firestore payment status
+- Billing history uses real-time listener (onSnapshot)
+
+#### PayTrust Payment Payload Fixes (DEPLOYED)
+- Added `paymentMethod: "BASIC_CARD"` to all payment types (credits, subscriptions, marketplace)
+- Added `description` field for transaction clarity
+- Improved customer name extraction (checks `firstName`/`lastName` first before falling back to `name`)
+- Fixed Railway environment variables (`PAYTRUST_API_URL` trailing slash, added `ENV=production`)
+- Files changed: `video-generator-backend/main.py`
+
+#### Auth Form Validation Fixes (COMPLETED)
+- Removed onBlur validation entirely - validation now only triggers on form submission
+- Changed all post-auth redirects from `/onboarding` to `/` (home page)
+- Files changed: `src/app/signin/page.tsx`, `src/app/signup/page.tsx`
+
+#### History Card Video Loading Improvements (COMPLETED)
+- Changed video `preload="metadata"` to `preload="auto"` for immediate thumbnails
+- Added `onCanPlay` fallback event for better loading detection
+- Added `useEffect` to check `readyState >= 2` on mount for cached videos
+- Fixed skeleton alignment with `absolute inset-0` and `rounded-none`
+- Files changed: `src/components/HistoryCard.tsx`
+
+#### Seller History Link Fix (COMPLETED)
+- Updated seller history link from `/account?tab=seller` to `/explore#history`
+- Added `id="history"` to explore page history section for scroll targeting
+- Added auto-scroll to history section when navigating with hash
+- Files changed: `src/components/SellerEarningsCard.tsx`, `src/app/explore/page.tsx`
+
+#### Remove Subscription Mentions & Cookie Policy (COMPLETED)
+- Removed Cookie Policy page entirely (`src/app/cookies/page.tsx`)
+- Removed cookie policy links from Footer and HomeFooterSection
+- Updated Terms page: focus on pay-as-you-go credits, removed subscription language
+- Updated Privacy page: simplified cookies section to "Technical Data & Local Storage"
+- Updated Refund page: removed Free Plan/Subscriptions sections, renumbered sections
+- Updated pricing layout metadata to reflect credits-only model
+- Changed "Subscribe" button to "Apply Now" in student section
+- Files changed: `src/app/cookies/`, `src/app/terms/page.tsx`, `src/app/privacy/page.tsx`, `src/app/refund/page.tsx`, `src/app/pricing/layout.tsx`, `src/components/Footer.tsx`, `src/components/homepage/HomeFooterSection.tsx`, `src/components/homepage/EmpoweringSection.tsx`
+
+---
+
 ### 2026-01-14
+
+#### History Skeleton Loader Fix (COMPLETED)
+- Fixed skeleton loader that kept showing until user hovered on videos
+- Root cause: `onLoadedData` event doesn't fire with `preload="metadata"` until playback starts
+- Changed to `onLoadedMetadata` which fires immediately when metadata loads
+- Updated account page skeleton to match HistoryCard dimensions using AspectRatio 1:1
+- Files changed: `src/components/HistoryCard.tsx`, `src/app/account/page.tsx`
 
 #### Balance System Fixes and Admin Features (COMPLETED)
 - Fixed critical balance calculation bugs in payout flow
@@ -171,9 +559,9 @@ This is a living document that tracks project development progress. Claude shoul
 | User Authentication | COMPLETE | Nov 2025 | Firebase Auth |
 | Video Generation | COMPLETE | Nov 2025 | Fal AI integration |
 | Credit System | COMPLETE | Dec 2025 | Server-only |
-| Credit Purchase | BLOCKED | Jan 2026 | PayTrust API expired |
+| Credit Purchase | BLOCKED | Jan 2026 | PayTrust checkout 404 - investigating |
 | Marketplace Browse | COMPLETE | Jan 2026 | Public access |
-| Marketplace Purchase | BLOCKED | Jan 2026 | PayTrust API expired |
+| Marketplace Purchase | BLOCKED | Jan 2026 | PayTrust checkout 404 - investigating |
 | Seller Dashboard | COMPLETE | Jan 2026 | IBAN payouts, availableBalance |
 | Payout System | COMPLETE | Jan 2026 | IBAN-based, backend API |
 | Admin Dashboard | COMPLETE | Jan 2026 | Full marketplace mgmt |
@@ -188,7 +576,7 @@ This is a living document that tracks project development progress. Claude shoul
 
 | ID | Severity | Component | Description | Status |
 |----|----------|-----------|-------------|--------|
-| ISS-001 | CRITICAL | Payments | PayTrust API key expired | OPEN |
+| ISS-001 | CRITICAL | Payments | PayTrust checkout returning 404 | OPEN |
 | ISS-002 | LOW | Frontend | Some console warnings | OPEN |
 
 ---

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quote - Novative AI for Reelzila - RAG & Chat System</title>
+<style>
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  body {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: #111;
+    background: #fff;
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 50px 60px;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding-bottom: 30px;
+    border-bottom: 3px solid #111;
+    margin-bottom: 30px;
+  }
+  .company-name {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    text-transform: uppercase;
+  }
+  .company-sub {
+    font-size: 10px;
+    color: #555;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+  .quote-title {
+    text-align: right;
+  }
+  .quote-title h1 {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -1px;
+    text-transform: uppercase;
+  }
+  .quote-ref {
+    font-size: 10px;
+    color: #555;
+    letter-spacing: 1px;
+    margin-top: 2px;
+  }
+
+  /* Meta */
+  .meta {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 35px;
+  }
+  .meta-block h3 {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #888;
+    margin-bottom: 6px;
+  }
+  .meta-block p {
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.7;
+  }
+
+  /* Scope Description */
+  .scope {
+    background: #f7f7f7;
+    border-left: 4px solid #111;
+    padding: 14px 18px;
+    margin-bottom: 30px;
+    font-size: 11px;
+    color: #333;
+  }
+
+  /* Table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 30px;
+  }
+  thead th {
+    background: #111;
+    color: #fff;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+  }
+  thead th:nth-child(3),
+  thead th:nth-child(4) {
+    text-align: center;
+  }
+  thead th:last-child {
+    text-align: right;
+  }
+  tbody td {
+    padding: 11px 12px;
+    border-bottom: 1px solid #e0e0e0;
+    vertical-align: top;
+    font-size: 11px;
+  }
+  tbody td:nth-child(3),
+  tbody td:nth-child(4) {
+    text-align: center;
+  }
+  tbody td:last-child {
+    text-align: right;
+    font-weight: 600;
+  }
+  .item-title {
+    font-weight: 700;
+    font-size: 11.5px;
+    margin-bottom: 2px;
+  }
+  .item-desc {
+    color: #555;
+    font-size: 10px;
+    line-height: 1.5;
+  }
+  .free-tag {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #111;
+    border: 1.5px solid #111;
+    padding: 1px 8px;
+    border-radius: 2px;
+  }
+  .section-row td {
+    background: #f5f5f5;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+    color: #555;
+    padding: 8px 12px;
+    border-bottom: 1px solid #ddd;
+  }
+
+  /* Totals */
+  .totals {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 40px;
+  }
+  .totals-box {
+    width: 280px;
+  }
+  .totals-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    font-size: 12px;
+    border-bottom: 1px solid #e0e0e0;
+  }
+  .totals-row.total {
+    border-bottom: 3px solid #111;
+    border-top: 2px solid #111;
+    font-size: 16px;
+    font-weight: 800;
+    padding: 12px 0;
+    margin-top: 4px;
+  }
+  .totals-label {
+    color: #555;
+  }
+  .totals-row.total .totals-label {
+    color: #111;
+  }
+
+  /* Terms */
+  .terms {
+    border-top: 1px solid #ddd;
+    padding-top: 20px;
+    margin-top: 10px;
+  }
+  .terms h3 {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #888;
+    margin-bottom: 8px;
+  }
+  .terms ul {
+    list-style: none;
+    padding: 0;
+  }
+  .terms li {
+    font-size: 10px;
+    color: #555;
+    padding: 3px 0;
+    padding-left: 14px;
+    position: relative;
+  }
+  .terms li::before {
+    content: "\2014";
+    position: absolute;
+    left: 0;
+    color: #999;
+  }
+
+  /* Footer */
+  .footer {
+    margin-top: 30px;
+    padding-top: 15px;
+    border-top: 3px solid #111;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .footer-left {
+    font-size: 10px;
+    color: #888;
+  }
+  .footer-right {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <div class="company-name">Novative AI</div>
+      <div class="company-sub">Software Engineering & AI Solutions</div>
+    </div>
+    <div class="quote-title">
+      <h1>Quote</h1>
+      <div class="quote-ref">REF: NAI-2026-05-09</div>
+    </div>
+  </div>
+
+  <!-- Meta -->
+  <div class="meta">
+    <div class="meta-block">
+      <h3>Prepared For</h3>
+      <p>Reelzila<br>reelzila.studio</p>
+    </div>
+    <div class="meta-block" style="text-align: center;">
+      <h3>Date</h3>
+      <p>May 9, 2026</p>
+    </div>
+    <div class="meta-block" style="text-align: right;">
+      <h3>Rate</h3>
+      <p>45.00 EUR / hour</p>
+    </div>
+  </div>
+
+  <!-- Scope -->
+  <div class="scope">
+    Development of a RAG-powered AI customer support chatbot for Reelzila. Includes knowledge base creation (RAG document), chat interface with text-formatting awareness and typing animation, AI engine integration with the RAG document, and smart token optimization for cost-efficient inference.
+  </div>
+
+  <!-- Table -->
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 5%;">#</th>
+        <th style="width: 50%;">Item</th>
+        <th style="width: 12%;">Hours</th>
+        <th style="width: 15%;">Rate</th>
+        <th style="width: 18%;">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- Section: Billable -->
+      <tr class="section-row">
+        <td colspan="5">Customer Support Chatbot — Core Deliverables</td>
+      </tr>
+      <tr>
+        <td>1</td>
+        <td>
+          <div class="item-title">RAG Knowledge Base Document Creation</div>
+          <div class="item-desc">Research and compile a comprehensive RAG knowledge base (.md) covering: Terms of Service & Privacy Policy, refund policy, marketplace ownership rules, AI video/image generation generalities (strengths, flaws, legal/ownership context), and all AI model information (strengths, credit costs, capabilities). Includes LLM persona, scope, tone guidelines, and escalation rules for the chatbot.</div>
+        </td>
+        <td>2</td>
+        <td>45.00 EUR</td>
+        <td>90.00 EUR</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>
+          <div class="item-title">Chat Interface Design & Development</div>
+          <div class="item-desc">Design and develop the frontend chat interface with: text-formatting awareness (markdown rendering for bold, italic, links, lists, code blocks), typing animation (simulated real-time message streaming), responsive design (mobile + desktop), and seamless embedding into the existing Next.js application.</div>
+        </td>
+        <td>4</td>
+        <td>45.00 EUR</td>
+        <td>180.00 EUR</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>
+          <div class="item-title" style="margin-bottom: 2px;">Chat AI Engine Integration</div>
+          <div class="item-desc" style="margin-bottom: 6px;">Integrate the RAG knowledge base document with an AI inference engine (e.g. OpenAI / Anthropic / local LLM). Includes:</div>
+          <div class="item-desc" style="margin-bottom: 2px;">- RAG retrieval pipeline: chunking the knowledge base, embedding, and context-aware retrieval</div>
+          <div class="item-desc" style="margin-bottom: 2px;">- Prompt construction with system persona, retrieved context, and user query</div>
+          <div class="item-desc" style="margin-bottom: 2px;">- Chat history storage per user (database-backed, persists across sessions)</div>
+          <div class="item-desc" style="margin-bottom: 2px;">- Smart token optimization: context window management, dynamic chunk selection, cost-efficient inference</div>
+          <div class="item-desc">- Response streaming, error handling, fallback responses</div>
+        </td>
+        <td>8</td>
+        <td>45.00 EUR</td>
+        <td>360.00 EUR</td>
+      </tr>
+
+      <!-- Section: Included -->
+      <tr class="section-row">
+        <td colspan="5">Included Maintenance & Setup</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>
+          <div class="item-title">API Key & Environment Configuration</div>
+          <div class="item-desc">Configure all required API keys, environment variables, and deployment settings for the AI engine integration.</div>
+        </td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td><span class="free-tag">Free</span></td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>
+          <div class="item-title">Knowledge Base Testing & Refinement</div>
+          <div class="item-desc">Test all RAG retrieval queries across every section of the knowledge base. Refine chunking strategy and prompts for accuracy.</div>
+        </td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td><span class="free-tag">Free</span></td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>
+          <div class="item-title">Deployment & Integration Testing</div>
+          <div class="item-desc">Deploy the chatbot to production environment, verify integration with the existing Reelzila frontend, and perform end-to-end testing.</div>
+        </td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td><span class="free-tag">Free</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Totals -->
+  <div class="totals">
+    <div class="totals-box">
+      <div class="totals-row">
+        <span class="totals-label">Billable Hours</span>
+        <span>14 h</span>
+      </div>
+      <div class="totals-row">
+        <span class="totals-label">Included Items</span>
+        <span>3 (no charge)</span>
+      </div>
+      <div class="totals-row">
+        <span class="totals-label">Hourly Rate</span>
+        <span>45.00 EUR</span>
+      </div>
+      <div class="totals-row total">
+        <span class="totals-label">Total Excl. VAT</span>
+        <span>630.00 EUR</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Terms -->
+  <div class="terms">
+    <h3>Terms & Conditions</h3>
+    <ul>
+      <li>Estimates are based on current understanding of the platform architecture and the RAG knowledge base document already created.</li>
+      <li>If the actual scope differs significantly from the description above, Novative AI will notify the client before proceeding.</li>
+      <li>Payment terms as per existing agreement.</li>
+      <li>This quote is valid for 30 days from the date of issue.</li>
+    </ul>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-left">NAI-2026-05-09 &middot; May 9, 2026</div>
+    <div class="footer-right">Novative AI</div>
+  </div>
+
+</body>
+</html>

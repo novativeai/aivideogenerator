@@ -1,3 +1,19 @@
+---
+name: functional-flow-verifier
+description: |
+  Verifies security implementations don't wrongly block legitimate user operations.
+  Activate when user says "verify flows", "check nothing is blocked", "test user journeys",
+  "make sure security doesn't break anything", or after implementing security changes.
+triggers:
+  - "verify flows"
+  - "check flows"
+  - "nothing blocked"
+  - "test journeys"
+  - "security break"
+related_skills:
+  - audit-agent-orchestration  # Run audit first, then verify flows
+---
+
 # Functional Flow Verifier - Security-Functionality Balance Agent
 
 ## Description
@@ -232,3 +248,22 @@ When user asks: "Verify nothing is blocked" or "Check flows work" or "Make sure 
 - Both should be run before production deployment
 - Results should be cross-referenced for complete coverage
 - All agents use `subagent_type: "Explore"` for thorough analysis
+
+---
+
+## Next Steps (Chain Workflow)
+
+After running flow verification:
+
+1. **If gaps found** -> Use `dev-agent-orchestration` to fix
+   - Create missing pages, endpoints, or rules
+   - Update webhook handlers
+
+2. **If all flows pass** -> Ready for deployment
+   - Update `.claude/docs/DEVELOPMENT_LOG.md`
+   - Run final `audit-agent-orchestration` if major changes
+
+**Complete production workflow:**
+```
+audit -> fix security -> verify-flows -> fix gaps -> verify-flows (clean) -> deploy
+```

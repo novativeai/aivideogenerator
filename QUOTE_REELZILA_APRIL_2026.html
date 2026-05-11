@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quote - Novative AI for Reelzila</title>
+<style>
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  body {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: #111;
+    background: #fff;
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 50px 60px;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding-bottom: 30px;
+    border-bottom: 3px solid #111;
+    margin-bottom: 30px;
+  }
+  .company-name {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    text-transform: uppercase;
+  }
+  .company-sub {
+    font-size: 10px;
+    color: #555;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+  .quote-title {
+    text-align: right;
+  }
+  .quote-title h1 {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -1px;
+    text-transform: uppercase;
+  }
+  .quote-ref {
+    font-size: 10px;
+    color: #555;
+    letter-spacing: 1px;
+    margin-top: 2px;
+  }
+
+  /* Meta Info */
+  .meta {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 35px;
+  }
+  .meta-block h3 {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #888;
+    margin-bottom: 6px;
+  }
+  .meta-block p {
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.7;
+  }
+
+  /* Scope Description */
+  .scope {
+    background: #f7f7f7;
+    border-left: 4px solid #111;
+    padding: 14px 18px;
+    margin-bottom: 30px;
+    font-size: 11px;
+    color: #333;
+  }
+
+  /* Table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 30px;
+  }
+  thead th {
+    background: #111;
+    color: #fff;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+  }
+  thead th:nth-child(3),
+  thead th:nth-child(4) {
+    text-align: center;
+  }
+  thead th:last-child {
+    text-align: right;
+  }
+  tbody td {
+    padding: 11px 12px;
+    border-bottom: 1px solid #e0e0e0;
+    vertical-align: top;
+    font-size: 11px;
+  }
+  tbody td:nth-child(3),
+  tbody td:nth-child(4) {
+    text-align: center;
+  }
+  tbody td:last-child {
+    text-align: right;
+    font-weight: 600;
+  }
+  .item-title {
+    font-weight: 700;
+    font-size: 11.5px;
+    margin-bottom: 2px;
+  }
+  .item-desc {
+    color: #555;
+    font-size: 10px;
+    line-height: 1.5;
+  }
+  .free-tag {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #111;
+    border: 1.5px solid #111;
+    padding: 1px 8px;
+    border-radius: 2px;
+  }
+  .section-row td {
+    background: #f5f5f5;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+    color: #555;
+    padding: 8px 12px;
+    border-bottom: 1px solid #ddd;
+  }
+
+  /* Totals */
+  .totals {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 40px;
+  }
+  .totals-box {
+    width: 280px;
+  }
+  .totals-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    font-size: 12px;
+    border-bottom: 1px solid #e0e0e0;
+  }
+  .totals-row.total {
+    border-bottom: 3px solid #111;
+    border-top: 2px solid #111;
+    font-size: 16px;
+    font-weight: 800;
+    padding: 12px 0;
+    margin-top: 4px;
+  }
+  .totals-label {
+    color: #555;
+  }
+  .totals-row.total .totals-label {
+    color: #111;
+  }
+
+  /* Terms */
+  .terms {
+    border-top: 1px solid #ddd;
+    padding-top: 20px;
+    margin-top: 10px;
+  }
+  .terms h3 {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #888;
+    margin-bottom: 8px;
+  }
+  .terms ul {
+    list-style: none;
+    padding: 0;
+  }
+  .terms li {
+    font-size: 10px;
+    color: #555;
+    padding: 3px 0;
+    padding-left: 14px;
+    position: relative;
+  }
+  .terms li::before {
+    content: "—";
+    position: absolute;
+    left: 0;
+    color: #999;
+  }
+
+  /* Footer */
+  .footer {
+    margin-top: 30px;
+    padding-top: 15px;
+    border-top: 3px solid #111;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .footer-left {
+    font-size: 10px;
+    color: #888;
+  }
+  .footer-right {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <div class="company-name">Novative AI</div>
+      <div class="company-sub">Software Engineering &amp; AI Solutions</div>
+    </div>
+    <div class="quote-title">
+      <h1>Quote</h1>
+      <div class="quote-ref">REF: NAI-2026-04-03</div>
+    </div>
+  </div>
+
+  <!-- Meta -->
+  <div class="meta">
+    <div class="meta-block">
+      <h3>Prepared For</h3>
+      <p>Reelzila<br>reelzila.studio</p>
+    </div>
+    <div class="meta-block" style="text-align: center;">
+      <h3>Date</h3>
+      <p>April 4, 2026</p>
+    </div>
+    <div class="meta-block" style="text-align: right;">
+      <h3>Rate</h3>
+      <p>45.00 EUR / hour</p>
+    </div>
+  </div>
+
+  <!-- Scope -->
+  <div class="scope">
+    Based on the change request dated April 3, 2026. The following items cover platform updates, new features, and included maintenance work to bring the website into compliance with the applicable requirements.
+  </div>
+
+  <!-- Table -->
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 5%;">#</th>
+        <th style="width: 50%;">Item</th>
+        <th style="width: 12%;">Hours</th>
+        <th style="width: 15%;">Rate</th>
+        <th style="width: 18%;">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- Section: Billable -->
+      <tr class="section-row">
+        <td colspan="5">Development &amp; Updates</td>
+      </tr>
+      <tr>
+        <td>1</td>
+        <td>
+          <div class="item-title">Replace Sora with PixVerse v6</div>
+          <div class="item-desc">Replace the discontinued Sora video generation model with PixVerse v6 (new industry standard). Includes backend model configuration via FAL.ai, credit pricing setup, frontend model card and grid update, and test coverage.</div>
+        </td>
+        <td>4</td>
+        <td>45.00 EUR</td>
+        <td>180.00 EUR</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>
+          <div class="item-title">Custom Email Domain</div>
+          <div class="item-desc">Configure transactional emails to be sent from Reelzila&rsquo;s own domain (e.g. noreply@reelzila.studio) instead of the default address. Includes Resend domain verification, DNS configuration guidance, and delivery testing.</div>
+        </td>
+        <td>3</td>
+        <td>45.00 EUR</td>
+        <td>135.00 EUR</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>
+          <div class="item-title">Custom Payment Amount Input</div>
+          <div class="item-desc">Add a free-text input field allowing users to manually enter a custom payment amount, supplementing the existing slider. Includes input validation and credit calculation sync.</div>
+        </td>
+        <td>1</td>
+        <td>45.00 EUR</td>
+        <td>45.00 EUR</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>
+          <div class="item-title">Medium Profile Link in Footer</div>
+          <div class="item-desc">Add a link to the Reelzila Medium profile in the website footer as a replacement for the blog section.</div>
+        </td>
+        <td>0.5</td>
+        <td>45.00 EUR</td>
+        <td>22.50 EUR</td>
+      </tr>
+
+      <!-- Section: Included -->
+      <tr class="section-row">
+        <td colspan="5">Included Maintenance &amp; Fixes</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>
+          <div class="item-title">Remove Sora Model References</div>
+          <div class="item-desc">Remove all Sora model references from the model selection grid, backend configuration, and related assets.</div>
+        </td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td><span class="free-tag">Free</span></td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>
+          <div class="item-title">Remove Blog Page</div>
+          <div class="item-desc">Remove the blog section and all associated routes from the website.</div>
+        </td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td><span class="free-tag">Free</span></td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td>
+          <div class="item-title">Fix Password Reset Flow</div>
+          <div class="item-desc">Resolve the 404 error occurring when users follow the password reset link from their email.</div>
+        </td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td><span class="free-tag">Free</span></td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td>
+          <div class="item-title">Remove Social Media Links</div>
+          <div class="item-desc">Remove all social media links from the website. To be re-added at a later date.</div>
+        </td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td><span class="free-tag">Free</span></td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td>
+          <div class="item-title">Fix Mobile Heading Overflow</div>
+          <div class="item-desc">Correct page headings on model pages that overflow beyond the screen width on mobile devices.</div>
+        </td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td><span class="free-tag">Free</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Totals -->
+  <div class="totals">
+    <div class="totals-box">
+      <div class="totals-row">
+        <span class="totals-label">Billable Hours</span>
+        <span>8.5 h</span>
+      </div>
+      <div class="totals-row">
+        <span class="totals-label">Included Items</span>
+        <span>5 (no charge)</span>
+      </div>
+      <div class="totals-row total">
+        <span class="totals-label">Total Excl. VAT</span>
+        <span>382.50 EUR</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Terms -->
+  <div class="terms">
+    <h3>Terms &amp; Conditions</h3>
+    <ul>
+      <li>Estimates are based on current understanding of the platform architecture.</li>
+      <li>If the actual scope differs significantly from the description above, Novative AI will notify the client before proceeding.</li>
+      <li>Payment terms as per existing agreement.</li>
+      <li>This quote is valid for 30 days from the date of issue.</li>
+    </ul>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-left">NAI-2026-04-03 &middot; April 4, 2026</div>
+    <div class="footer-right">Novative AI</div>
+  </div>
+
+</body>
+</html>

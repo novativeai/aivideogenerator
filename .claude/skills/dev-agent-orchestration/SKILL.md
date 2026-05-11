@@ -1,3 +1,18 @@
+---
+name: dev-agent-orchestration
+description: |
+  Intelligent multi-agent development orchestrator. Activate when user says "build", "create",
+  "develop", "implement", "fix", "refactor", "add", or requests any development work.
+  Analyzes task complexity and deploys appropriate agents.
+triggers:
+  - "build"
+  - "create"
+  - "develop"
+  - "implement"
+  - "add feature"
+  - "refactor"
+---
+
 # Development Agent Orchestration - Multi-Agent Production Pipeline
 
 ## Description
@@ -615,3 +630,32 @@ Launch Phase 6 for build validation
 - Context7 should be used to verify ANY library integration
 - Parallel execution maximizes speed while maintaining quality
 - Each phase's output feeds into the next phase
+
+---
+
+## Post-Development Verification (Chain Workflow)
+
+After completing development:
+
+1. **Run `functional-flow-verifier`**
+   - Ensures new code doesn't break existing user flows
+   - Verifies all operations are properly permitted
+
+2. **Run `audit-agent-orchestration`** (for major features)
+   - Full production readiness check
+   - Security, performance, and quality gates
+
+**Recommended flow:**
+```
+dev-agent-orchestration -> functional-flow-verifier -> audit (if major)
+         ^                          |
+         |__________________________|
+              (fix any issues)
+```
+
+## Update Development Log
+
+After completing work, update `.claude/docs/DEVELOPMENT_LOG.md` with:
+- Features implemented
+- Files changed
+- Any follow-up needed

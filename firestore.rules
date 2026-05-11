@@ -21,9 +21,11 @@ service cloud.firestore {
       allow read: if request.auth != null && request.auth.uid == userId;
 
       // Allow users to create their own document (on signup)
+      // Users can set isAdmin to false (default) but not true
+      // Users can set credits to 10 (default) but not other values
       allow create: if request.auth != null
         && request.auth.uid == userId
-        && !request.resource.data.keys().hasAny(['isAdmin'])
+        && (!request.resource.data.keys().hasAny(['isAdmin']) || request.resource.data.isAdmin == false)
         && (!request.resource.data.keys().hasAny(['credits']) || request.resource.data.credits == 10);
 
       // Allow users to update their own document with restrictions
@@ -156,6 +158,20 @@ service cloud.firestore {
       }
 
       // ============================================
+      // CHAT MESSAGES SUBCOLLECTION (Reelzila AI Assistant)
+      // ============================================
+      match /chatMessages/{chatMessageId} {
+        // Users can read their own chat messages
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        // Users can create their own chat messages
+        allow create: if request.auth != null && request.auth.uid == userId;
+
+        // Only server can update/delete
+        allow update, delete: if false;
+      }
+
+      // ============================================
       // SELLER BALANCE SUBCOLLECTION
       // ============================================
       match /seller_balance/{balanceId} {
@@ -166,6 +182,7 @@ service cloud.firestore {
         allow create, update, delete: if false;
       }
     }
+
 
     // ============================================
     // CONTACTS COLLECTION (contact form submissions)
@@ -316,6 +333,21 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
 
       // Only server can create/update/delete (via webhook)
+      allow create, update, delete: if false;
+    }
+
+    // ============================================
+    // PAYTRUST REFERENCES COLLECTION
+    // Maps 32-char hex reference IDs to payment metadata
+    // Server-only (Admin SDK bypasses rules)
+    // ============================================
+    match /paytrust_references/{referenceId} {
+      // Only admins can read for debugging
+      allow read: if request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+
+      // Only server can create/update/delete
       allow create, update, delete: if false;
     }
 

@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NovativeAI - Marketplace Project Quote</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+        }
+
+        .document {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            padding: 60px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+        }
+
+        .header {
+            text-align: center;
+            border-bottom: 3px solid #D4FF4F;
+            padding-bottom: 30px;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+            color: #1a1a1a;
+        }
+
+        .header-meta {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 20px;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .header-meta div {
+            text-align: left;
+        }
+
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section h2 {
+            font-size: 24px;
+            color: #D4FF4F;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .section h3 {
+            font-size: 16px;
+            color: #333;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+
+        .section p {
+            margin-bottom: 10px;
+            color: #555;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        th {
+            background: #D4FF4F;
+            color: #1a1a1a;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        tr:hover {
+            background: #f9f9f9;
+        }
+
+        .highlight {
+            background: #f0f8ff;
+            padding: 20px;
+            border-left: 4px solid #D4FF4F;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        .highlight strong {
+            color: #D4FF4F;
+        }
+
+        .checklist {
+            list-style: none;
+            margin: 15px 0;
+        }
+
+        .checklist li {
+            padding: 8px 0;
+            padding-left: 30px;
+            position: relative;
+        }
+
+        .checklist li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #D4FF4F;
+            font-weight: bold;
+            font-size: 18px;
+        }
+
+        .cost-summary {
+            background: #D4FF4F;
+            color: #1a1a1a;
+            padding: 20px;
+            border-radius: 4px;
+            margin: 20px 0;
+            text-align: center;
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .footer {
+            border-top: 2px solid #D4FF4F;
+            padding-top: 30px;
+            margin-top: 60px;
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+        }
+
+        @media print {
+            body {
+                background: white;
+            }
+            .document {
+                box-shadow: none;
+                padding: 0;
+                max-width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="document">
+        <!-- HEADER -->
+        <div class="header">
+            <h1>MARKETPLACE SYSTEM IMPLEMENTATION</h1>
+            <p style="font-size: 18px; color: #666; margin-top: 10px;">Project Quote & Documentation</p>
+            <div class="header-meta">
+                <div><strong>Client:</strong> NovativeAI</div>
+                <div><strong>Date:</strong> November 2025</div>
+                <div><strong>Quote Total:</strong> €640</div>
+            </div>
+        </div>
+
+        <!-- EXECUTIVE SUMMARY -->
+        <div class="section">
+            <h2>1. EXECUTIVE SUMMARY</h2>
+            <p>This quote outlines the implementation of the Marketplace feature for the NovativeAI video generation platform. The marketplace will enable users to buy and sell high-quality video content with full usage rights, creating a community-driven ecosystem.</p>
+            <h3>Scope of Work:</h3>
+            <ul class="checklist">
+                <li>Full marketplace system with product listing and discovery</li>
+                <li>Admin panel for product management and uploads</li>
+                <li>Real-time purchase flow with PayTrust integration</li>
+                <li>Advanced tag-based filtering system</li>
+                <li>Fully responsive design and optimized performance</li>
+                <li>Complete technical documentation</li>
+            </ul>
+        </div>
+
+        <!-- PROJECT OVERVIEW -->
+        <div class="section">
+            <h2>2. PROJECT OVERVIEW</h2>
+
+            <h3>2.1 Scope Delivered</h3>
+            <table>
+                <tr>
+                    <th>Component</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                </tr>
+                <tr>
+                    <td>Marketplace Page</td>
+                    <td>📋 Planned</td>
+                    <td>Browse, filter, and purchase videos</td>
+                </tr>
+                <tr>
+                    <td>Product Grid</td>
+                    <td>📋 Planned</td>
+                    <td>4-column responsive grid with hover effects</td>
+                </tr>
+                <tr>
+                    <td>Admin Panel</td>
+                    <td>📋 Planned</td>
+                    <td>Product management and upload interface</td>
+                </tr>
+                <tr>
+                    <td>Payment Integration</td>
+                    <td>📋 Planned</td>
+                    <td>PayTrust integration for secure purchases</td>
+                </tr>
+                <tr>
+                    <td>Marketplace Branding</td>
+                    <td>📋 Planned</td>
+                    <td>"Best Community" banner and marketing copy</td>
+                </tr>
+                <tr>
+                    <td>Tag-Based Filtering</td>
+                    <td>📋 Planned</td>
+                    <td>Multi-select filtering system with real-time updates</td>
+                </tr>
+            </table>
+
+            <h3>2.2 Technology Stack</h3>
+            <table>
+                <tr>
+                    <th>Layer</th>
+                    <th>Technology</th>
+                </tr>
+                <tr>
+                    <td>Frontend Framework</td>
+                    <td>Next.js 15.4.2 with React 19 (Canary)</td>
+                </tr>
+                <tr>
+                    <td>Language</td>
+                    <td>TypeScript</td>
+                </tr>
+                <tr>
+                    <td>Styling</td>
+                    <td>Tailwind CSS + shadcn/ui</td>
+                </tr>
+                <tr>
+                    <td>Animations</td>
+                    <td>Framer Motion</td>
+                </tr>
+                <tr>
+                    <td>Database</td>
+                    <td>Firebase Firestore</td>
+                </tr>
+                <tr>
+                    <td>Storage</td>
+                    <td>Firebase Storage</td>
+                </tr>
+                <tr>
+                    <td>Authentication</td>
+                    <td>Firebase Authentication</td>
+                </tr>
+                <tr>
+                    <td>Payments</td>
+                    <td>PayTrust Integration</td>
+                </tr>
+                <tr>
+                    <td>Hosting</td>
+                    <td>Vercel (Frontend), Firebase (Backend)</td>
+                </tr>
+            </table>
+        </div>
+
+        <!-- FEATURES IMPLEMENTED -->
+        <div class="section">
+            <h2>3. FEATURES IMPLEMENTED</h2>
+
+            <h3>3.1 Marketplace Features</h3>
+            <ul class="checklist">
+                <li><strong>Product Browsing:</strong> Dynamic grid display with 1-4 columns, video previews on hover</li>
+                <li><strong>Product Filtering:</strong> Multi-select tag filtering with real-time updates</li>
+                <li><strong>Purchase Flow:</strong> Integrated payment modal with PayTrust gateway</li>
+                <li><strong>Marketplace Banner:</strong> "Best Community" headline with premium marketing copy</li>
+            </ul>
+
+            <h3>3.2 Admin Features</h3>
+            <ul class="checklist">
+                <li><strong>Product Management:</strong> Video URL input with live preview</li>
+                <li><strong>Dashboard Access:</strong> Quick navigation from admin dashboard to marketplace management</li>
+                <li><strong>Form Validation:</strong> Comprehensive validation for product details</li>
+                <li><strong>Success Notifications:</strong> Real-time feedback on product submission</li>
+            </ul>
+        </div>
+
+        <!-- SYSTEM ARCHITECTURE -->
+        <div class="section">
+            <h2>4. SYSTEM ARCHITECTURE</h2>
+
+            <h3>4.1 Database Schema</h3>
+            <p><strong>Firestore Collections:</strong></p>
+            <ul class="checklist">
+                <li>marketplace_listings: Product inventory with pricing and metadata</li>
+                <li>users: User accounts with generation history and payments</li>
+                <li>marketplace_purchases: Purchase transaction records</li>
+            </ul>
+
+            <h3>4.2 Component Architecture</h3>
+            <p><strong>Frontend Components:</strong></p>
+            <ul class="checklist">
+                <li>MarketplaceGrid: Product grid display with responsive columns</li>
+                <li>TagsFilter: Multi-select filtering interface</li>
+                <li>DynamicBanner: Marketplace banner with video background</li>
+                <li>ModelCard: Individual product card component</li>
+                <li>PurchaseFormModal: Payment processing modal</li>
+            </ul>
+        </div>
+
+        <!-- INTEGRATION DETAILS -->
+        <div class="section">
+            <h2>5. INTEGRATION DETAILS</h2>
+
+            <h3>5.1 Firebase Integration</h3>
+            <ul class="checklist">
+                <li><strong>Firestore:</strong> Real-time product syncing with onSnapshot listeners</li>
+                <li><strong>Firebase Storage:</strong> Video and image file uploads with URL generation</li>
+                <li><strong>Firebase Authentication:</strong> User verification and session management</li>
+            </ul>
+
+            <h3>5.2 Payment Integration</h3>
+            <ul class="checklist">
+                <li><strong>PayTrust Gateway:</strong> Secure payment processing with EUR/USD support</li>
+                <li><strong>Revenue Split:</strong> Creator receives 80% of sale price, platform retains 20%</li>
+                <li><strong>Transaction Logging:</strong> Complete audit trail in Firestore</li>
+            </ul>
+
+            <h3>5.3 Search & Discovery</h3>
+            <ul class="checklist">
+                <li>Tag-based filtering system with multi-select capability</li>
+                <li>Real-time product count updates</li>
+                <li>Product sorting by creation date (newest first)</li>
+            </ul>
+        </div>
+
+        <!-- COST BREAKDOWN -->
+        <div class="section">
+            <h2>6. COST BREAKDOWN</h2>
+
+            <h3>6.1 Development Services (Cost Per Task)</h3>
+            <table>
+                <tr>
+                    <th>Task</th>
+                    <th>Hours</th>
+                    <th>Rate/Hour</th>
+                    <th>Cost per Task</th>
+                </tr>
+                <tr>
+                    <td>Marketplace Core Frontend (Grid, Filtering, Product Cards)</td>
+                    <td>8</td>
+                    <td>€40</td>
+                    <td><strong>€320</strong></td>
+                </tr>
+                <tr>
+                    <td>Admin Panel Development (Product Management Interface)</td>
+                    <td>3</td>
+                    <td>€40</td>
+                    <td><strong>€120</strong></td>
+                </tr>
+                <tr>
+                    <td>Firebase Integration (Firestore, Storage, Auth)</td>
+                    <td>2</td>
+                    <td>€40</td>
+                    <td><strong>€80</strong></td>
+                </tr>
+                <tr>
+                    <td>Testing & Bug Fixes (QA, Performance Optimization)</td>
+                    <td>2</td>
+                    <td>€40</td>
+                    <td><strong>€80</strong></td>
+                </tr>
+                <tr>
+                    <td>Technical Documentation & Deployment</td>
+                    <td>1</td>
+                    <td>€40</td>
+                    <td><strong>€40</strong></td>
+                </tr>
+                <tr style="background: #f0f0f0; font-weight: bold;">
+                    <td colspan="2">SUBTOTAL DEVELOPMENT</td>
+                    <td>16 hours</td>
+                    <td>€640</td>
+                </tr>
+            </table>
+
+            <h3>6.2 Infrastructure (Monthly)</h3>
+            <table>
+                <tr>
+                    <th>Service</th>
+                    <th>Cost</th>
+                </tr>
+                <tr>
+                    <td>Firebase Firestore & Auth</td>
+                    <td>$0 (Starter tier covers load)</td>
+                </tr>
+                <tr>
+                    <td>Firebase Storage</td>
+                    <td>First paid subscription required (est. $10-20/month*)</td>
+                </tr>
+                <tr>
+                    <td>Vercel Hosting</td>
+                    <td>$0 (Free tier)</td>
+                </tr>
+                <tr>
+                    <td>Video Hosting (Google Cloud)</td>
+                    <td>$0 (Public bucket)</td>
+                </tr>
+            </table>
+            <p style="margin-top: 10px; font-size: 13px; color: #666;"><em>*Storage costs vary based on upload volume and data retention. Initial estimate assumes modest marketplace activity.</em></p>
+
+            <div class="cost-summary">
+                QUOTE TOTAL: €640
+            </div>
+
+            <h3>6.3 What's Included (One-Time Development Cost: €640):</h3>
+            <ul class="checklist">
+                <li>Complete marketplace browsing and filtering system</li>
+                <li>Admin panel for product management and uploads</li>
+                <li>Real-time PayTrust payment integration</li>
+                <li>Tag-based product discovery system</li>
+                <li>Responsive design (Mobile, Tablet, Desktop)</li>
+                <li>Firebase integration (Firestore, Storage, Authentication)</li>
+                <li>Technical documentation and setup guide</li>
+                <li>30 days of post-launch support</li>
+            </ul>
+
+            <h3>6.4 Recurring Monthly Costs (Not Included in Quote):</h3>
+            <ul class="checklist">
+                <li>Firebase Storage subscription (est. €10-20/month depending on usage)</li>
+            </ul>
+
+            <h3>6.5 Additional Services NOT Included:</h3>
+            <ul style="list-style: none; margin-left: 0;">
+                <li style="padding-left: 20px;">• Advanced analytics dashboard</li>
+                <li style="padding-left: 20px;">• SMS notification system</li>
+                <li style="padding-left: 20px;">• Custom payment processors (other than PayTrust)</li>
+                <li style="padding-left: 20px;">• Video hosting setup (uses existing infrastructure)</li>
+                <li style="padding-left: 20px;">• Marketing materials or promotional assets</li>
+            </ul>
+        </div>
+
+        <!-- TIMELINE -->
+        <div class="section">
+            <h2>7. IMPLEMENTATION TIMELINE</h2>
+
+            <h3>Phase 1: Setup & Architecture (Days 1-2)</h3>
+            <ul class="checklist">
+                <li>Database schema design</li>
+                <li>Type definitions</li>
+                <li>Component planning</li>
+            </ul>
+
+            <h3>Phase 2: Core Marketplace (Days 3-6)</h3>
+            <ul class="checklist">
+                <li>Marketplace page</li>
+                <li>Product grid component</li>
+                <li>Tag filtering system</li>
+            </ul>
+
+            <h3>Phase 3: Admin Tools (Days 7-8)</h3>
+            <ul class="checklist">
+                <li>Admin marketplace page</li>
+                <li>Product upload form</li>
+                <li>Dashboard integration</li>
+            </ul>
+
+            <h3>Phase 4: Testing & Polish (Days 9-10)</h3>
+            <ul class="checklist">
+                <li>Bug fixes</li>
+                <li>Performance optimization</li>
+                <li>Documentation and deployment</li>
+            </ul>
+
+            <p><strong>Estimated Total Duration:</strong> 10 Development Days (Upon approval)</p>
+        </div>
+
+        <!-- CONCLUSION -->
+        <div class="section">
+            <h2>8. CONCLUSION</h2>
+            <p>Upon approval, the Marketplace system for NovativeAI will be implemented with all core features, integrations, and optimizations. The system will be production-ready, scalable, and provide an excellent user experience for both buyers and sellers.</p>
+
+            <h3>Deliverables Upon Completion:</h3>
+            <ul class="checklist">
+                <li>Fully functional marketplace with advanced filtering</li>
+                <li>Admin management panel for product uploads</li>
+                <li>Real-time PayTrust payment integration</li>
+                <li>Responsive design for all devices</li>
+                <li>Complete technical documentation</li>
+                <li>30 days of post-launch support</li>
+            </ul>
+
+            <p style="margin-top: 20px;"><strong>Quote Total: €640</strong></p>
+        </div>
+
+        <!-- FOOTER -->
+        <div class="footer">
+            <p><strong>Document Prepared By:</strong> Development Team</p>
+            <p><strong>Date:</strong> November 3, 2025 | <strong>Version:</strong> 1.0 | <strong>Status:</strong> QUOTE PENDING APPROVAL</p>
+            <p style="margin-top: 15px; font-size: 11px; color: #999;">This document contains proprietary information and is confidential. Unauthorized distribution is prohibited.</p>
+        </div>
+    </div>
+</body>
+</html>

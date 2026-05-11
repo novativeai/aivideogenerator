@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Novative AI - Quote</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            line-height: 1.5;
+            color: #000;
+            background: white;
+        }
+        .document {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 60px;
+        }
+        .header {
+            border-bottom: 2px solid #000;
+            padding-bottom: 24px;
+            margin-bottom: 40px;
+        }
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 20px;
+        }
+        .company-name {
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+        .doc-type {
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #555;
+        }
+        .header-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: #444;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0 0 40px;
+        }
+        th {
+            background: #000;
+            color: #fff;
+            padding: 10px 12px;
+            text-align: left;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+        th:last-child { text-align: right; }
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #ddd;
+            font-size: 13px;
+            vertical-align: top;
+        }
+        .free-tag {
+            color: #555;
+            font-size: 12px;
+            font-style: italic;
+        }
+        .total-row td {
+            font-weight: 700;
+            font-size: 15px;
+            border-top: 2px solid #000;
+            border-bottom: none;
+            padding-top: 14px;
+        }
+        .payment-note {
+            font-size: 12px;
+            color: #555;
+            text-align: right;
+            margin-top: -30px;
+            margin-bottom: 40px;
+        }
+        .footer {
+            border-top: 1px solid #ddd;
+            padding-top: 20px;
+            margin-top: 60px;
+            font-size: 11px;
+            color: #888;
+            text-align: center;
+        }
+        @media print {
+            .document { padding: 40px; max-width: 100%; }
+        }
+    </style>
+</head>
+<body>
+    <div class="document">
+        <div class="header">
+            <div class="header-top">
+                <span class="company-name">Novative AI</span>
+                <span class="doc-type">Quote</span>
+            </div>
+            <div class="header-meta">
+                <span><strong>Client:</strong> Reelzila</span>
+                <span><strong>Date:</strong> February 2026</span>
+            </div>
+        </div>
+
+        <table>
+            <tr>
+                <th style="width: 40%">Deliverable</th>
+                <th>Description</th>
+                <th style="width: 10%">Price</th>
+            </tr>
+            <tr>
+                <td><strong>Pagination</strong></td>
+                <td>Paginated layout (10/page) with navigation controls for transaction history and user list.</td>
+                <td style="text-align: right; font-weight: 600;">&euro;50</td>
+            </tr>
+            <tr>
+                <td><strong>User List Search</strong></td>
+                <td>Search bar for the admin user list &mdash; filter by email, name, or user ID.</td>
+                <td style="text-align: right; font-weight: 600;">&euro;20</td>
+            </tr>
+            <tr>
+                <td><strong>User Generation History</strong></td>
+                <td>Full generation history per user in admin: thumbnails, prompts, model, timestamps, and status. Backend endpoint + frontend UI.</td>
+                <td style="text-align: right; font-weight: 600;">&euro;100</td>
+            </tr>
+            <tr>
+                <td>Withdrawal popup fix</td>
+                <td>Success popup showed &euro;0.00 instead of actual amount.</td>
+                <td style="text-align: right;" class="free-tag">Free</td>
+            </tr>
+            <tr>
+                <td>Admin performance</td>
+                <td>Skeleton loading, data caching, parallel API calls, N+1 query fix.</td>
+                <td style="text-align: right;" class="free-tag">Free</td>
+            </tr>
+            <tr>
+                <td>Admin logout</td>
+                <td>Add missing logout to admin header.</td>
+                <td style="text-align: right;" class="free-tag">Free</td>
+            </tr>
+            <tr class="total-row">
+                <td colspan="2" style="text-align: right;">Total</td>
+                <td style="text-align: right;">&euro;170</td>
+            </tr>
+        </table>
+
+        <p class="payment-note">100% due at delivery &middot; Valid 30 days</p>
+
+        <div class="footer">
+            Novative AI &middot; novativeai.com
+        </div>
+    </div>
+</body>
+</html>

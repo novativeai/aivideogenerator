@@ -10,19 +10,28 @@ import base64
 import subprocess
 import tempfile
 from datetime import datetime
+from pathlib import Path
 
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
 from dotenv import load_dotenv
 import requests
 
-# Load environment variables
-load_dotenv()
+# Load .env from frontend directory first
+env_path = Path('video-generator-frontend/.env.local')
+if env_path.exists():
+    load_dotenv(dotenv_path=str(env_path))
+    print(f'Loaded env from: {env_path}')
+else:
+    load_dotenv()
+    print('Loaded env from default')
 
 # Initialize Firebase Admin SDK
 service_account_base64 = os.getenv('FIREBASE_SERVICE_ACCOUNT_BASE64')
 if not service_account_base64:
     print('FIREBASE_SERVICE_ACCOUNT_BASE64 not found in .env')
+    # Debug: list env vars seen
+    print(f'Env paths checked: {env_path} (exists={env_path.exists()})')
     exit(1)
 
 service_account_json = base64.b64decode(service_account_base64).decode('utf-8')

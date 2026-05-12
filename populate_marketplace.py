@@ -1,6 +1,10 @@
 """
-Script to populate marketplace with videos from Firebase Storage
+[DEPRECATED] Script to populate marketplace with videos from Firebase Storage
 Extracts metadata, generates tags, and creates Firestore documents
+
+!! DO NOT USE - Superseded by populate_all_marketplace.py !!
+This script sets thumbnailUrl = videoUrl which causes the infinite-skeleton bug.
+Use populate_all_marketplace.py instead, which generates proper static thumbnails.
 """
 
 import os

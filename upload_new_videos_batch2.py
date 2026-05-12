@@ -5,6 +5,9 @@ Script to upload 4 new videos to Firebase Storage and create Firestore documents
 import os
 import json
 import base64
+import subprocess
+import tempfile
+from datetime import datetime
 from pathlib import Path
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
@@ -90,6 +93,47 @@ NEW_VIDEOS = [
 LOCAL_VIDEO_PATH = Path('../video-generator-frontend/public/marketplace/videos')
 
 
+def extract_thumbnail(local_video_path: Path) -> str | None:
+    """Extract a single frame at 0.5s from a local video file and return the temporary JPEG path."""
+    try:
+        tmp_thumb = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+        tmp_thumb_path = tmp_thumb.name
+        tmp_thumb.close()
+
+        result = subprocess.run(
+            ['ffmpeg', '-i', str(local_video_path), '-ss', '0.5', '-frames:v', '1',
+             '-q:v', '2', '-y', tmp_thumb_path],
+            capture_output=True, timeout=15
+        )
+        if result.returncode != 0:
+            print(f'  ffmpeg failed: {result.stderr.decode()[:200]}')
+            os.unlink(tmp_thumb_path)
+            return None
+        return tmp_thumb_path
+    except Exception as e:
+        print(f'  Thumbnail extraction error: {e}')
+        return None
+
+
+def upload_thumbnail_to_storage(thumb_path: str, seller_id: str = "admin") -> str | None:
+    """Upload a JPEG thumbnail to Firebase Storage and return its public URL."""
+    try:
+        ts = int(datetime.now().timestamp() * 1000)
+        blob_path = f"marketplace/thumbnails/{seller_id}/{ts}.jpg"
+        blob = bucket.blob(blob_path)
+        blob.upload_from_filename(thumb_path, content_type='image/jpeg')
+        blob.make_public()
+        return blob.public_url
+    except Exception as e:
+        print(f'  Thumbnail upload error: {e}')
+        return None
+    finally:
+        try:
+            os.unlink(thumb_path)
+        except OSError:
+            pass
+
+
 def upload_video_to_storage(local_path, storage_path):
     """Upload a video file to Firebase Storage"""
     try:
@@ -103,7 +147,7 @@ def upload_video_to_storage(local_path, storage_path):
         return None
 
 
-def create_marketplace_listing(video_data, video_url):
+def create_marketplace_listing(video_data, video_url, thumbnail_url):
     """Create marketplace listing in Firestore"""
     try:
         listing_ref = db.collection('marketplace_listings').document()
@@ -134,7 +178,7 @@ def create_marketplace_listing(video_data, video_url):
             'tags': video_data['tags'],
             'hasAudio': video_data['hasAudio'],
             'useCases': video_data['useCases'],
-            'thumbnailUrl': video_url,
+            'thumbnailUrl': thumbnail_url or video_url,
             'status': 'published',
             'createdAt': firestore.SERVER_TIMESTAMP,
             'updatedAt': firestore.SERVER_TIMESTAMP,
@@ -185,9 +229,22 @@ def main():
 
         print(f'  Uploaded: {video_url[:70]}...')
 
+        # Generate thumbnail from local video file
+        print('  Generating thumbnail...')
+        thumb_path = extract_thumbnail(local_path)
+        thumbnail_url = None
+        if thumb_path:
+            thumbnail_url = upload_thumbnail_to_storage(thumb_path)
+            if thumbnail_url:
+                print(f'  ✅ Thumbnail: {thumbnail_url[:70]}...')
+            else:
+                print('  ⚠️  Thumbnail upload failed, falling back to video URL')
+        else:
+            print('  ⚠️  Thumbnail extraction failed, falling back to video URL')
+
         # Create Firestore document
         print('  Creating Firestore document...')
-        listing = create_marketplace_listing(video, video_url)
+        listing = create_marketplace_listing(video, video_url, thumbnail_url)
 
         if listing:
             print(f'  Created listing ID: {listing["id"]}')

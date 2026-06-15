@@ -1047,6 +1047,64 @@ async def cancel_marketplace_purchase(request: Request, cancel_request: CancelMa
     return {"status": "cancelled", "message": "Purchase cancelled"}
 
 
+class DeleteListingRequest(BaseModel):
+    itemId: str = Field(..., min_length=1, max_length=128)
+
+
+@app.post("/marketplace/delete-listing")
+@limiter.limit("20/minute")
+async def delete_marketplace_listing(request: Request, delete_request: DeleteListingRequest):
+    """
+    Delete a marketplace listing owned by the authenticated seller.
+
+    Removes the item from both the seller's `marketplace_items` subcollection
+    and the public `marketplace_listings` collection. Firestore client deletes
+    are intentionally locked (server-only), so ownership is verified here using
+    the Admin SDK before deletion.
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized.")
+
+    # Verify user authentication
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+
+    token = auth_header.split("Bearer ")[1]
+    try:
+        decoded_token = auth.verify_id_token(token)
+        user_id = decoded_token['uid']
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    item_id = delete_request.itemId
+
+    # Verify ownership via the seller's own subcollection (source of truth)
+    item_ref = db.collection('users').document(user_id).collection('marketplace_items').document(item_id)
+    item_doc = item_ref.get()
+
+    if not item_doc.exists:
+        raise HTTPException(status_code=404, detail="Listing not found")
+
+    # Delete the public listing(s) that reference this item and belong to the seller.
+    deleted_listings = 0
+    listings_query = db.collection('marketplace_listings').where('itemId', '==', item_id).stream()
+    for listing in listings_query:
+        listing_data = listing.to_dict() or {}
+        if listing_data.get('sellerId') == user_id:
+            listing.reference.delete()
+            deleted_listings += 1
+
+    # Delete the seller's own copy.
+    item_ref.delete()
+
+    logger.info(
+        f"[DELETE-LISTING] Item {item_id} deleted by user {user_id} "
+        f"({deleted_listings} public listing(s) removed)"
+    )
+    return {"status": "deleted", "itemId": item_id, "listingsRemoved": deleted_listings}
+
+
 class ConfirmMarketplacePurchaseRequest(BaseModel):
     purchaseId: str = Field(..., min_length=1)
 

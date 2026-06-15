@@ -1,0 +1,6 @@
+# Force NIXPACKS to build BOTH Python and Node.
+# The repo has a root package.json (playwright), which makes NIXPACKS
+# auto-detect it as Node-only and skip installing Python — so `python`/
+# `hypercorn` are missing at runtime. Declaring both providers installs the
+# Python deps from requirements.txt (incl. hypercorn) while keeping Node.
+providers = ["python", "node"]
